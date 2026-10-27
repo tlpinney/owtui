@@ -69,3 +69,9 @@ dictionary words.
 Recordings are OpenWhispr's `audio/OpenWhispr-<time>-<id>.webm` files (Opus).
 owtui plays them with `ffplay`, falling back to `mpv`, then `afplay` (which
 can't decode WebM). Install ffmpeg if neither is present: `brew install ffmpeg`.
+
+## Troubleshooting the mouse
+
+Set `OWTUI_MOUSE_LOG=/path/to/file` to log every mouse event with where the
+list is drawn. Some hosts (herdr, when its terminal reports pixels) send
+positions in pixels instead of cells; owtui detects that and converts them.

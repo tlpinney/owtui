@@ -340,6 +340,24 @@ impl App {
 
     pub fn handle_mouse(&mut self, ev: MouseEvent) {
         let (x, y) = (ev.column, ev.row);
+        if let Some(path) = std::env::var_os("OWTUI_MOUSE_LOG") {
+            // Debugging aid: where clicks land versus where the list is drawn.
+            use std::io::Write;
+            if let Ok(mut log) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(
+                    log,
+                    "{:?} x={x} y={y} tab={:?} rows={:?} selected={:?}",
+                    ev.kind,
+                    self.tab,
+                    self.rows_area,
+                    self.history.selected()
+                );
+            }
+        }
         let mut double = false;
         if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
             double = self.last_click.is_some_and(|(at, lx, ly)| {
@@ -849,6 +867,32 @@ impl App {
             Err(e) => self.fail(e.to_string()),
         }
     }
+}
+
+/// Size of the terminal in cells and pixels, for [`mouse_to_cells`].
+#[derive(Clone, Copy)]
+pub struct ScreenSize {
+    pub columns: u16,
+    pub rows: u16,
+    pub width_px: u16,
+    pub height_px: u16,
+}
+
+/// Some hosts (herdr when its terminal reports pixels) send mouse positions
+/// in pixels even though owtui asked for cells. A position past the screen
+/// can only be pixels; from then on, positions are scaled to cells.
+pub fn mouse_to_cells(mut ev: MouseEvent, size: ScreenSize, pixels: &mut bool) -> MouseEvent {
+    if ev.column >= size.columns || ev.row >= size.rows {
+        *pixels = true;
+    }
+    if *pixels && size.width_px > 0 && size.height_px > 0 {
+        let scale =
+            |v: u16, cells: u16, px: u16| (u32::from(v) * u32::from(cells) / u32::from(px)) as u16;
+        ev.column =
+            scale(ev.column, size.columns, size.width_px).min(size.columns.saturating_sub(1));
+        ev.row = scale(ev.row, size.rows, size.height_px).min(size.rows.saturating_sub(1));
+    }
+    ev
 }
 
 pub fn one_line(text: &str, width: usize) -> String {

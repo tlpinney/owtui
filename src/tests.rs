@@ -523,3 +523,31 @@ fn double_click_in_the_preview_selects_a_word_to_replace() {
         _ => panic!("editor closed"),
     }
 }
+
+#[test]
+fn pixel_mouse_positions_become_cells() {
+    use crate::app::{mouse_to_cells, ScreenSize};
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let size = ScreenSize {
+        columns: 200,
+        rows: 80,
+        width_px: 1600,
+        height_px: 1600,
+    };
+    let at = |column, row| MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let mut pixels = false;
+    // Inside the screen and no sign of pixels yet: taken as cells.
+    let ev = mouse_to_cells(at(10, 7), size, &mut pixels);
+    assert_eq!((ev.column, ev.row, pixels), (10, 7, false));
+    // Past the screen: pixels (8 px per column, 20 px per row).
+    let ev = mouse_to_cells(at(429, 837), size, &mut pixels);
+    assert_eq!((ev.column, ev.row, pixels), (53, 41, true));
+    // Later small positions are pixels too.
+    let ev = mouse_to_cells(at(16, 100), size, &mut pixels);
+    assert_eq!((ev.column, ev.row), (2, 5));
+}

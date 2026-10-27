@@ -56,6 +56,7 @@ fn main() -> Result<()> {
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    let mut pixel_mouse = false;
     while !app.quit {
         app.player.poll();
         terminal.draw(|frame| ui::draw(frame, app))?;
@@ -63,7 +64,21 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         if event::poll(Duration::from_millis(500))? {
             match event::read()? {
                 Event::Key(key) => app.handle_key(key),
-                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                Event::Mouse(mouse) => {
+                    let mouse = match crossterm::terminal::window_size() {
+                        Ok(size) => {
+                            let size = app::ScreenSize {
+                                columns: size.columns,
+                                rows: size.rows,
+                                width_px: size.width,
+                                height_px: size.height,
+                            };
+                            app::mouse_to_cells(mouse, size, &mut pixel_mouse)
+                        }
+                        Err(_) => mouse,
+                    };
+                    app.handle_mouse(mouse)
+                }
                 _ => {}
             }
         }

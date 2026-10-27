@@ -13,7 +13,8 @@ const ACCENT: Color = Color::Cyan;
 
 fn selected() -> Style {
     Style::new()
-        .bg(Color::DarkGray)
+        .bg(Color::Blue)
+        .fg(Color::White)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -140,6 +141,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     )
     .header(Row::new(["When", "Model", "Sec", "Text"]).style(Style::new().fg(ACCENT).bold()))
     .row_highlight_style(selected())
+    .highlight_symbol("▶ ")
     .block(Block::bordered().title(format!(" {count} transcripts ")));
     frame.render_stateful_widget(table, list, &mut app.history);
     app.rows_area = rows_area(list, true);
@@ -284,6 +286,7 @@ fn draw_insights(frame: &mut Frame, app: &mut App, area: Rect) {
             .style(Style::new().fg(ACCENT).bold()),
     )
     .row_highlight_style(selected())
+    .highlight_symbol("▶ ")
     .block(Block::bordered().title(format!(" {} mistakes ", ins.patterns.len())));
     frame.render_stateful_widget(table, list, &mut app.patterns);
     app.rows_area = rows_area(list, true);
@@ -333,6 +336,7 @@ fn draw_dictionary(frame: &mut Frame, app: &mut App, area: Rect) {
     let rows: Vec<Row> = words.iter().map(|w| Row::new([w.clone()])).collect();
     let table = Table::new(rows, [Constraint::Min(10)])
         .row_highlight_style(selected())
+        .highlight_symbol("▶ ")
         .block(Block::bordered().title(title));
     frame.render_stateful_widget(table, area, &mut app.dict);
     app.rows_area = rows_area(area, false);
@@ -354,6 +358,7 @@ fn draw_snippets(frame: &mut Frame, app: &mut App, area: Rect) {
     )
     .header(Row::new(["Trigger", "Replacement"]).style(Style::new().fg(ACCENT).bold()))
     .row_highlight_style(selected())
+    .highlight_symbol("▶ ")
     .block(Block::bordered().title(title));
     frame.render_stateful_widget(table, area, &mut app.snips);
     app.rows_area = rows_area(area, true);
