@@ -207,6 +207,8 @@ class OWTui(App):
         self.query_one("#dict-table", DataTable).add_columns("Word")
         self.query_one("#snip-table", DataTable).add_columns("Trigger", "Replacement")
         self.action_reload()
+        # Start on the list, so e/Enter edit right away instead of typing into search.
+        self.query_one("#history-table", DataTable).focus()
 
     # ---- loading
 
@@ -308,6 +310,15 @@ class OWTui(App):
     def action_search(self) -> None:
         self.query_one("#tabs", TabbedContent).active = "tab-history"
         self.query_one("#history-search", Input).focus()
+
+    @on(Input.Submitted, "#history-search")
+    def _search_done(self) -> None:
+        self.query_one("#history-table", DataTable).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape" and self.focused is self.query_one("#history-search", Input):
+            self.query_one("#history-table", DataTable).focus()
+            event.stop()
 
     # ---- context-sensitive actions
 

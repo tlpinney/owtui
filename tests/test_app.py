@@ -62,6 +62,7 @@ def fake_app():
 
 async def drive(app):
     async with app.run_test(size=(160, 45)) as pilot:
+        assert app.query_one("#history-table", DataTable).has_focus
         assert app.query_one("#history-table", DataTable).row_count == 2
         app.query_one("#history-search", Input).value = "kube"
         await pilot.pause()
