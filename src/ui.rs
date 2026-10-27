@@ -39,13 +39,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .map(|(i, t)| format!("{} {}", i + 1, t.title())),
     )
     .select(app.tab.index())
-    .highlight_style(Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))
-    .block(
-        Block::new()
-            .borders(Borders::BOTTOM)
-            .title(Line::from(vec![" OpenWhispr ".bold(), mode]).right_aligned()),
-    );
-    frame.render_widget(tabs, top);
+    .highlight_style(Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
+    // Tabs and the app label share the first row; a block title there would
+    // take a row of its own and push the tabs behind the border.
+    let label = Line::from(vec![" OpenWhispr ".bold(), mode]).right_aligned();
+    let [row, rule] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(top);
+    let [tabs_area, label_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(label.width() as u16)])
+            .areas(row);
+    frame.render_widget(tabs, tabs_area);
+    frame.render_widget(label, label_area);
+    frame.render_widget(Block::new().borders(Borders::TOP), rule);
 
     match app.tab {
         Tab::History => draw_history(frame, app, body),

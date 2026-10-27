@@ -269,6 +269,13 @@ fn draws_every_tab_and_modal() {
         buf.content().iter().map(|c| c.symbol()).collect::<String>()
     };
     let history = screen(&mut app);
+    // The tab bar is visible on the top row, beside the app label.
+    let top_row: String = history.chars().take(120).collect();
+    assert!(
+        top_row.contains("1 History") && top_row.contains("5 Stats"),
+        "{top_row}"
+    );
+    assert!(top_row.contains("OpenWhispr"));
     assert!(history.contains("2 transcripts") && history.contains("Run kube control"));
     for code in [KeyCode::Tab, KeyCode::Tab, KeyCode::Tab, KeyCode::Tab] {
         press(&mut app, code);
