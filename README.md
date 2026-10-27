@@ -95,3 +95,24 @@ The Privacy tab, and the ● badge at the top right, read OpenWhispr's own files
 Chromium's localStorage log. OpenWhispr only uploads when you're signed in
 **and** cloud backup is on **and** you have a subscription; the tab turns red
 if that or any upload happens, and yellow if a cloud engine is selected.
+
+## Known limits
+
+- Tested on macOS (Apple Silicon) only. Paths follow Electron's defaults on
+  Linux and Windows, but that's untested.
+- Corrections live in `~/.local/share/owtui/corrections.json`, not in
+  OpenWhispr: its API can't change a transcript's text, and writing its
+  database by hand is unsafe.
+- The Privacy tab reads OpenWhispr's settings from Chromium's localStorage
+  log. Settings Chromium has compacted into `.ldb` tables read as "unknown".
+- Changes (dictionary, snippets, deleting) need OpenWhispr running; with the
+  app closed, history is read-only.
+- Audio playback needs `ffplay` (ffmpeg) or `mpv`; macOS's `afplay` can't play
+  OpenWhispr's WebM recordings.
+- Mouse positions sent in pixels (herdr does this) are detected and converted;
+  a click in the top-left few pixels before any other mouse event may be
+  misread.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

@@ -1,8 +1,12 @@
 [package]
 name = "owtui"
-version = "0.2.0"
+version = "0.1.0"
 edition = "2021"
-description = "Terminal UI for browsing and editing OpenWhispr history, dictionary and snippets"
+description = "Terminal UI for reviewing and correcting OpenWhispr dictation history"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["openwhispr", "dictation", "tui", "ratatui"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1"
