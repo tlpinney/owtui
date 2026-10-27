@@ -4,10 +4,19 @@ A small terminal UI for [OpenWhispr](https://github.com/OpenWhispr/openwhispr):
 browse what you've dictated, correct it, and manage the dictionary and
 snippets.
 
+Rust + [Ratatui](https://ratatui.rs), on the same toolchain as herdr
+(`rust-toolchain.toml` pins 1.96.1; `just` for tasks).
+
 ```bash
-uv run owtui                       # open the TUI
-uv run owtui --export pairs.jsonl  # write training pairs and exit
+just install                   # cargo install into ~/.cargo/bin
+owtui                          # open the TUI
+owtui --export pairs.jsonl     # write training pairs and exit
+
+just test                      # cargo nextest (fake bridge, never real data)
+just lint                      # fmt --check + clippy -D warnings
 ```
+
+The first version was Python/Textual; it's kept at the `python-prototype` tag.
 
 ## How it talks to OpenWhispr
 
@@ -23,12 +32,13 @@ uv run owtui --export pairs.jsonl  # write training pairs and exit
 
 | Tab | What | Keys |
 | --- | --- | --- |
-| History | search, preview (app text, heard text, your correction), correct, delete | `/` search, `e`/Enter correct, `d` delete |
+| History | search, preview (app text, heard text, your correction), correct, delete | `/` search (Esc clears), `e`/Enter correct, `d` delete |
 | Dictionary | words that steer recognition and cleanup | `a` add (comma-separated), `e` rename, `d` delete |
 | Snippets | trigger → replacement text | `a` add, `e` edit, `d` delete |
 | Stats | counts, words, audio minutes, models, training pairs | |
 
-`x` exports pairs, `r` reloads, `q` quits.
+`↑↓`/`jk` move, `Tab`/`1`–`4` switch tabs, `x` exports pairs, `r` reloads, `q` quits.
+In editors: `Ctrl+S` saves, `Esc` cancels, `Ctrl+R` reverts a correction.
 
 ## Corrections and training
 
