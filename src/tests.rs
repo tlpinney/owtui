@@ -405,3 +405,62 @@ fn plays_and_stops_a_recording() {
         .text
         .contains("No audio player"));
 }
+
+#[test]
+fn mouse_selects_rows_and_places_the_cursor() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, Terminal};
+    let dir = tempfile::tempdir().unwrap();
+    let _state = fake_bridge(dir.path());
+    let store = Store::new(
+        dir.path().join("bridge.json"),
+        dir.path().join("none.db"),
+        dir.path().join("c.json"),
+    );
+    let mut app = App::new(store, dir.path().to_path_buf());
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let click = |app: &mut App, x: u16, y: u16| {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+    // Second row of the history table selects the older entry.
+    let rows = app.rows_area;
+    click(&mut app, rows.x + 2, rows.y + 1);
+    assert_eq!(app.selected_item().unwrap().id, 1);
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.selected_item().unwrap().id, 2);
+
+    // In the editor, a click moves the cursor to the clicked word.
+    press(&mut app, KeyCode::Char('e'));
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let (x, y) = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width - 4).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            (0..4)
+                .map(|i| buffer[(x + i, y)].symbol())
+                .collect::<String>()
+                == "kube"
+        })
+        .expect("editor shows the text");
+    click(&mut app, x + 1, y); // on the "u": cursor between "k" and "ube"
+    ctrl(&mut app, 'w');
+    type_text(&mut app, "kubectl");
+    match app.modal.as_ref() {
+        Some(Modal::Correct { editor, .. }) => {
+            assert_eq!(editor.text(), "Run kubectlube control get pods.")
+        }
+        _ => panic!("editor closed"),
+    }
+}

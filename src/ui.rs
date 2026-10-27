@@ -51,6 +51,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(label, label_area);
     frame.render_widget(Block::new().borders(Borders::TOP), rule);
 
+    app.rows_area = Rect::default();
     match app.tab {
         Tab::History => draw_history(frame, app, body),
         Tab::Insights => draw_insights(frame, app, body),
@@ -60,6 +61,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     draw_footer(frame, app, foot);
     draw_modal(frame, app);
+}
+
+/// The cells inside a bordered table that hold its rows.
+fn rows_area(table: Rect, header: bool) -> Rect {
+    let top = 1 + u16::from(header);
+    Rect::new(
+        table.x + 1,
+        table.y + top,
+        table.width.saturating_sub(2),
+        table.height.saturating_sub(top + 1),
+    )
 }
 
 fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -132,6 +144,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     .row_highlight_style(selected())
     .block(Block::bordered().title(format!(" {count} transcripts ")));
     frame.render_stateful_widget(table, list, &mut app.history);
+    app.rows_area = rows_area(list, true);
 
     frame.render_widget(
         Paragraph::new(preview_lines)
@@ -246,6 +259,7 @@ fn draw_insights(frame: &mut Frame, app: &mut App, area: Rect) {
     .row_highlight_style(selected())
     .block(Block::bordered().title(format!(" {} mistakes ", ins.patterns.len())));
     frame.render_stateful_widget(table, list, &mut app.patterns);
+    app.rows_area = rows_area(list, true);
 
     let pattern = app
         .patterns
@@ -294,6 +308,7 @@ fn draw_dictionary(frame: &mut Frame, app: &mut App, area: Rect) {
         .row_highlight_style(selected())
         .block(Block::bordered().title(title));
     frame.render_stateful_widget(table, area, &mut app.dict);
+    app.rows_area = rows_area(area, false);
 }
 
 fn draw_snippets(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -314,6 +329,7 @@ fn draw_snippets(frame: &mut Frame, app: &mut App, area: Rect) {
     .row_highlight_style(selected())
     .block(Block::bordered().title(title));
     frame.render_stateful_widget(table, area, &mut app.snips);
+    app.rows_area = rows_area(area, true);
 }
 
 fn draw_stats(frame: &mut Frame, app: &App, area: Rect) {
@@ -425,6 +441,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("^S", "save"),
             ("^D", "fix word → dictionary"),
             ("^P", "play"),
+            ("⌥←→", "word"),
             ("^R", "revert to app's text"),
             ("Esc", "cancel"),
         ],
@@ -432,6 +449,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("^S", "save"),
             ("^D", "fix word → dictionary"),
             ("^P", "play"),
+            ("⌥←→", "word"),
             ("Esc", "cancel"),
         ],
         (Some(Modal::Word { .. }), _) => &[("Enter/^S", "save"), ("Esc", "cancel")],

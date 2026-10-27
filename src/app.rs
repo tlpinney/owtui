@@ -4,7 +4,10 @@ use crate::editor::TextArea;
 use crate::insights::{self, Insights};
 use crate::player::Player;
 use crate::store::{Snippet, Store, Transcription};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -107,6 +110,8 @@ pub struct App {
     pub modal: Option<Modal>,
     pub status: Option<Status>,
     pub player: Player,
+    /// Screen cells holding the current tab's list rows, set when drawn.
+    pub rows_area: Rect,
     pub quit: bool,
 }
 
@@ -138,6 +143,7 @@ impl App {
             modal: None,
             status: None,
             player: Player::default(),
+            rows_area: Rect::default(),
             quit: false,
         };
         app.reload();
@@ -325,6 +331,57 @@ impl App {
 
     fn switch(&mut self, by: usize) {
         self.tab = Tab::ALL[(self.tab.index() + by) % Tab::ALL.len()];
+    }
+
+    pub fn handle_mouse(&mut self, ev: MouseEvent) {
+        let (x, y) = (ev.column, ev.row);
+        match (ev.kind, self.modal.as_mut()) {
+            (MouseEventKind::Down(MouseButton::Left), Some(modal)) => match modal {
+                Modal::Correct { quick: Some(q), .. } => {
+                    if q.heard.click(x, y) {
+                        q.on_fixed = false;
+                    } else if q.fixed.click(x, y) {
+                        q.on_fixed = true;
+                    }
+                }
+                Modal::Correct { editor, .. } => {
+                    editor.click(x, y);
+                }
+                Modal::Word { input, .. } => {
+                    input.click(x, y);
+                }
+                Modal::Snippet {
+                    trigger,
+                    text,
+                    on_text,
+                    ..
+                } => {
+                    if trigger.click(x, y) {
+                        *on_text = false;
+                    } else if text.click(x, y) {
+                        *on_text = true;
+                    }
+                }
+                Modal::Confirm { .. } => {}
+            },
+            (MouseEventKind::Down(MouseButton::Left), None) => {
+                if !self.rows_area.contains(Position::new(x, y)) {
+                    return;
+                }
+                let (offset, current) = match self.tab {
+                    Tab::History => (self.history.offset(), self.history.selected()),
+                    Tab::Insights => (self.patterns.offset(), self.patterns.selected()),
+                    Tab::Dictionary => (self.dict.offset(), self.dict.selected()),
+                    Tab::Snippets => (self.snips.offset(), self.snips.selected()),
+                    Tab::Stats => return,
+                };
+                let target = offset + (y - self.rows_area.y) as usize;
+                self.step(target as isize - current.unwrap_or(0) as isize);
+            }
+            (MouseEventKind::ScrollDown, None) => self.step(1),
+            (MouseEventKind::ScrollUp, None) => self.step(-1),
+            _ => {}
+        }
     }
 
     fn step(&mut self, delta: isize) {

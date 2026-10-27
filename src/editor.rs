@@ -14,6 +14,14 @@ pub struct TextArea {
     col: usize,
     multiline: bool,
     scroll: usize,
+    /// Where the text was last drawn, and each visual line as
+    /// (row, first char, end char), so clicks map back to a position.
+    inner: Rect,
+    segments: Vec<(usize, usize, usize)>,
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '\'' || c == '_'
 }
 
 impl TextArea {
@@ -35,6 +43,8 @@ impl TextArea {
             col,
             multiline,
             scroll: 0,
+            inner: Rect::default(),
+            segments: Vec::new(),
         }
     }
 
@@ -45,7 +55,9 @@ impl TextArea {
     /// Replaces the text, keeping the cursor where it can stay.
     pub fn set_text(&mut self, text: &str) {
         let (row, col) = (self.row, self.col);
+        let (inner, scroll) = (self.inner, self.scroll);
         *self = Self::new(text, self.multiline);
+        (self.inner, self.scroll) = (inner, scroll);
         self.row = row.min(self.lines.len() - 1);
         self.col = col.min(self.len(self.row));
     }
@@ -71,6 +83,84 @@ impl TextArea {
         chars[start..end].iter().collect()
     }
 
+    /// Start of the previous word, or the end of the line above.
+    fn word_left(&mut self) {
+        if self.col == 0 {
+            if self.row > 0 {
+                self.row -= 1;
+                self.col = self.len(self.row);
+            }
+            return;
+        }
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let mut col = self.col;
+        while col > 0 && !is_word(chars[col - 1]) {
+            col -= 1;
+        }
+        while col > 0 && is_word(chars[col - 1]) {
+            col -= 1;
+        }
+        self.col = col;
+    }
+
+    /// End of the next word, or the start of the line below.
+    fn word_right(&mut self) {
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        if self.col >= chars.len() {
+            if self.row + 1 < self.lines.len() {
+                self.row += 1;
+                self.col = 0;
+            }
+            return;
+        }
+        let mut col = self.col;
+        while col < chars.len() && !is_word(chars[col]) {
+            col += 1;
+        }
+        while col < chars.len() && is_word(chars[col]) {
+            col += 1;
+        }
+        self.col = col;
+    }
+
+    fn delete_word_back(&mut self) {
+        let (row, end) = (self.row, self.col);
+        self.word_left();
+        if self.row != row {
+            // At the start of a line: join it to the one above, like Backspace.
+            let line = self.lines.remove(row);
+            self.lines[self.row].push_str(&line);
+            return;
+        }
+        let (a, b) = (self.byte(row, self.col), self.byte(row, end));
+        self.lines[row].drain(a..b);
+    }
+
+    /// Moves the cursor to a clicked screen cell; false when outside the text.
+    pub fn click(&mut self, x: u16, y: u16) -> bool {
+        let inner = self.inner;
+        if !inner.contains(Position::new(x, y)) {
+            return false;
+        }
+        let line = self.scroll + (y - inner.y) as usize;
+        let Some(&(row, start, end)) = self.segments.get(line).or(self.segments.last()) else {
+            return false;
+        };
+        let target = (x - inner.x) as usize;
+        let mut cells = 0;
+        self.col = end;
+        for (i, ch) in self.lines[row].chars().enumerate().take(end).skip(start) {
+            let w = ch.width().unwrap_or(0);
+            if cells + w > target {
+                self.col = i;
+                break;
+            }
+            cells += w;
+        }
+        self.row = row;
+        true
+    }
+
     fn len(&self, row: usize) -> usize {
         self.lines[row].chars().count()
     }
@@ -88,6 +178,13 @@ impl TextArea {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let (row, col) = (self.row, self.col);
         match key.code {
+            KeyCode::Left if ctrl || alt => self.word_left(),
+            KeyCode::Right if ctrl || alt => self.word_right(),
+            // Option+arrows arrive as Alt+b / Alt+f in many macOS terminals.
+            KeyCode::Char('b') if alt => self.word_left(),
+            KeyCode::Char('f') if alt => self.word_right(),
+            KeyCode::Char('w') if ctrl => self.delete_word_back(),
+            KeyCode::Backspace if ctrl || alt => self.delete_word_back(),
             KeyCode::Char('a') if ctrl => self.col = 0,
             KeyCode::Char('e') if ctrl => self.col = self.len(row),
             KeyCode::Char('u') if ctrl => {
@@ -164,43 +261,50 @@ impl TextArea {
         let height = inner.height.max(1) as usize;
 
         // Wrap by display cells, so wide characters take their real space.
-        let mut visual: Vec<String> = Vec::new();
-        let mut cursor = (0, 0);
+        let mut segments = Vec::new();
         for (r, line) in self.lines.iter().enumerate() {
-            let mut current = String::new();
-            let mut cells = 0;
-            for (i, ch) in line.chars().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            let (mut start, mut cells) = (0, 0);
+            for (i, ch) in chars.iter().enumerate() {
                 let w = ch.width().unwrap_or(0);
-                if cells + w > width && !current.is_empty() {
-                    visual.push(std::mem::take(&mut current));
+                if cells + w > width && i > start {
+                    segments.push((r, start, i));
+                    start = i;
                     cells = 0;
                 }
-                if r == self.row && i == self.col {
-                    cursor = (visual.len(), cells);
-                }
-                current.push(ch);
                 cells += w;
             }
-            if r == self.row && self.col >= line.chars().count() {
-                if cells >= width {
-                    visual.push(std::mem::take(&mut current));
-                    cells = 0;
-                }
-                cursor = (visual.len(), cells);
+            segments.push((r, start, chars.len()));
+            // A cursor just past a full visual line gets a line of its own.
+            if r == self.row && self.col == chars.len() && cells >= width && !chars.is_empty() {
+                segments.push((r, chars.len(), chars.len()));
             }
-            visual.push(current);
         }
+        let cursor_line = segments
+            .iter()
+            .rposition(|&(r, s, e)| r == self.row && s <= self.col && self.col <= e)
+            .unwrap_or(0);
+        let cursor_start = segments[cursor_line].1;
+        let cursor_cell: usize = self.lines[self.row]
+            .chars()
+            .take(self.col)
+            .skip(cursor_start)
+            .map(|c| c.width().unwrap_or(0))
+            .sum();
+        let cursor = (cursor_line, cursor_cell);
         if cursor.0 < self.scroll {
             self.scroll = cursor.0;
         } else if cursor.0 >= self.scroll + height {
             self.scroll = cursor.0 + 1 - height;
         }
-        let shown: Vec<Line> = visual
-            .into_iter()
+        let shown: Vec<Line> = segments
+            .iter()
             .skip(self.scroll)
             .take(height)
-            .map(Line::raw)
+            .map(|&(r, s, e)| Line::raw(self.lines[r].chars().take(e).skip(s).collect::<String>()))
             .collect();
+        self.inner = inner;
+        self.segments = segments;
         frame.render_widget(Paragraph::new(shown), inner);
         if focused {
             frame.set_cursor_position(Position::new(
@@ -242,5 +346,39 @@ mod tests {
         assert_eq!(t.text(), "a b");
         t.input(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert_eq!(t.text(), "");
+    }
+
+    #[test]
+    fn jumps_and_deletes_by_word() {
+        let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+        let mut t = TextArea::new("open the dewy to the right.", false);
+        t.input(alt(KeyCode::Left)); // before "right"
+        t.input(alt(KeyCode::Char('b'))); // before "the"
+        t.input(alt(KeyCode::Left)); // before "to"
+        t.input(alt(KeyCode::Left)); // before "dewy"
+        assert_eq!(t.word_at_cursor(), "dewy");
+        t.input(alt(KeyCode::Right)); // after "dewy"
+        t.input(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        for c in "TUI".chars() {
+            t.input(key(KeyCode::Char(c)));
+        }
+        assert_eq!(t.text(), "open the TUI to the right.");
+    }
+
+    #[test]
+    fn click_places_the_cursor_on_wrapped_text() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut t = TextArea::new("open the dewy to the right", true);
+        let mut terminal = Terminal::new(TestBackend::new(12, 5)).unwrap();
+        // 10 cells wide inside the border: "open the d" / "ewy to the" / " right".
+        terminal
+            .draw(|f| t.render(f, f.area(), Block::bordered(), true))
+            .unwrap();
+        assert!(t.click(3, 2)); // second visual line, third cell: "y"
+        assert_eq!(t.word_at_cursor(), "dewy");
+        assert!(!t.click(0, 0), "border is outside the text");
+        assert!(t.click(10, 3)); // past the end of the last line
+        t.input(key(KeyCode::Char('!')));
+        assert_eq!(t.text(), "open the dewy to the right!");
     }
 }

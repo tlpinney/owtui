@@ -11,7 +11,7 @@ mod ui;
 
 use anyhow::Result;
 use app::App;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use ratatui::DefaultTerminal;
 use std::path::Path;
 use std::time::Duration;
@@ -48,7 +48,9 @@ fn main() -> Result<()> {
     }
     let mut app = App::new(store, std::env::current_dir()?);
     let mut terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, &mut app);
+    let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -59,8 +61,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Wake now and then so status messages expire.
         if event::poll(Duration::from_millis(500))? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
+            match event::read()? {
+                Event::Key(key) => app.handle_key(key),
+                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                _ => {}
             }
         }
     }
