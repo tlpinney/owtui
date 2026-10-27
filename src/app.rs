@@ -2,6 +2,7 @@
 
 use crate::editor::TextArea;
 use crate::insights::{self, Insights};
+use crate::player::Player;
 use crate::store::{Snippet, Store, Transcription};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
@@ -105,6 +106,7 @@ pub struct App {
     pub patterns: TableState,
     pub modal: Option<Modal>,
     pub status: Option<Status>,
+    pub player: Player,
     pub quit: bool,
 }
 
@@ -135,6 +137,7 @@ impl App {
             patterns: TableState::default(),
             modal: None,
             status: None,
+            player: Player::default(),
             quit: false,
         };
         app.reload();
@@ -269,7 +272,26 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('q') => {
+                self.player.stop();
+                self.quit = true;
+            }
+            KeyCode::Char('p') => match self.tab {
+                Tab::History => {
+                    if let Some(t) = self.selected_item() {
+                        self.toggle_audio(&t);
+                    }
+                }
+                Tab::Insights => {
+                    let example = self.selected_pattern().map(|p| p.example);
+                    if let Some(t) =
+                        example.and_then(|id| self.items.iter().find(|t| t.id == id).cloned())
+                    {
+                        self.toggle_audio(&t);
+                    }
+                }
+                _ => {}
+            },
             KeyCode::Char('r') => {
                 self.reload();
                 self.notify("Reloaded.");
@@ -334,6 +356,22 @@ impl App {
     }
 
     /// Shows a pattern's newest example on History, ready to correct.
+    /// Plays `t`'s recording, or stops it when it's the one playing.
+    pub fn toggle_audio(&mut self, t: &Transcription) {
+        if self.player.playing == Some(t.id) {
+            self.player.stop();
+            self.notify("Stopped.");
+            return;
+        }
+        let Some(path) = self.store.audio_path(t) else {
+            return self.fail("OpenWhispr didn't keep a recording for this transcript.");
+        };
+        match self.player.play(&path, t.id) {
+            Ok(()) => self.notify("▶ Playing. Press the same key again to stop."),
+            Err(e) => self.fail(e.to_string()),
+        }
+    }
+
     fn open_example(&mut self) {
         let Some(pattern) = self.selected_pattern() else {
             return;
@@ -478,7 +516,14 @@ impl App {
             Modal::Correct {
                 item, mut editor, ..
             } => {
-                if ctrl && key.code == KeyCode::Char('d') {
+                if ctrl && key.code == KeyCode::Char('p') {
+                    self.toggle_audio(&item);
+                    self.modal = Some(Modal::Correct {
+                        item,
+                        editor,
+                        quick: None,
+                    });
+                } else if ctrl && key.code == KeyCode::Char('d') {
                     let quick = Some(Box::new(QuickFix {
                         heard: TextArea::new(&editor.word_at_cursor(), false),
                         fixed: TextArea::new("", false),

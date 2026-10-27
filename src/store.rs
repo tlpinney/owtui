@@ -251,6 +251,21 @@ impl Store {
         Ok(Value::Array(rows.collect::<rusqlite::Result<_>>()?))
     }
 
+    /// The recording OpenWhispr kept for `t`: `audio/OpenWhispr-<time>-<id>.<ext>`.
+    pub fn audio_path(&self, t: &Transcription) -> Option<PathBuf> {
+        let dir = self.db_path.parent()?.join("audio");
+        let suffix = format!("-{}", t.id);
+        fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|stem| stem.ends_with(&suffix))
+            })
+    }
+
     pub fn delete_transcription(&self, t: &Transcription) -> Result<()> {
         self.bridge
             .request(Method::Delete, &format!("/v1/transcriptions/{}", t.id))?;

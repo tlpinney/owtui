@@ -93,11 +93,17 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
                 .audio_duration_ms
                 .map(|ms| format!("{:.0}", ms as f64 / 1000.0));
             let mark = if t.correction.is_some() { "✎ " } else { "" };
+            let playing = if app.player.playing == Some(t.id) {
+                "▶ "
+            } else {
+                ""
+            };
             Row::new(vec![
                 Cell::from(short_time(t.when())),
                 Cell::from(t.engine().to_string()),
                 Cell::from(secs.unwrap_or_default()),
                 Cell::from(Line::from(vec![
+                    Span::styled(playing, Style::new().fg(Color::Green).bold()),
                     Span::styled(mark, Style::new().fg(Color::Yellow)),
                     Span::raw(one_line(t.final_text(), 200)),
                 ])),
@@ -414,12 +420,14 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         (Some(Modal::Correct { item, .. }), _) if item.correction.is_some() => &[
             ("^S", "save"),
             ("^D", "fix word → dictionary"),
+            ("^P", "play"),
             ("^R", "revert to app's text"),
             ("Esc", "cancel"),
         ],
         (Some(Modal::Correct { .. }), _) => &[
             ("^S", "save"),
             ("^D", "fix word → dictionary"),
+            ("^P", "play"),
             ("Esc", "cancel"),
         ],
         (Some(Modal::Word { .. }), _) => &[("Enter/^S", "save"), ("Esc", "cancel")],
@@ -431,6 +439,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         (None, Tab::History) => &[
             ("↑↓", "move"),
             ("e", "correct"),
+            ("p", "play"),
             ("d", "delete"),
             ("/", "search"),
             ("x", "export"),
@@ -441,6 +450,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         (None, Tab::Insights) => &[
             ("↑↓", "move"),
             ("a", "add fix to dictionary"),
+            ("p", "play example"),
             ("Enter", "open example"),
             ("Tab", "next tab"),
             ("q", "quit"),

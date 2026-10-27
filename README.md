@@ -30,14 +30,14 @@ just lint                      # fmt --check + clippy -D warnings
 
 | Tab | What | Keys |
 | --- | --- | --- |
-| History | search, preview (app text, heard text, your correction), correct, delete | `/` search (Esc clears), `e`/Enter correct, `d` delete |
-| Insights | mistakes that repeat (heard → should be), what share of word errors they cover, dictionary vs fine-tune advice | `a` add the fix to the dictionary, Enter open the newest example |
+| History | search, preview (app text, heard text, your correction), play, correct, delete | `/` search (Esc clears), `p` play/stop, `e`/Enter correct, `d` delete |
+| Insights | mistakes that repeat (heard → should be), what share of word errors they cover, dictionary vs fine-tune advice | `a` add the fix to the dictionary, `p` play the example, Enter open it |
 | Dictionary | words that steer recognition and cleanup | `a` add (comma-separated), `e` rename, `d` delete |
 | Snippets | trigger → replacement text | `a` add, `e` edit, `d` delete |
 | Stats | counts, words, audio minutes, models, training pairs | |
 
 `↑↓`/`jk` move, `Tab`/`1`–`5` switch tabs, `x` exports pairs, `r` reloads, `q` quits.
-In editors: `Ctrl+S` saves, `Esc` cancels, `Ctrl+R` reverts a correction.
+In editors: `Ctrl+S` saves, `Esc` cancels, `Ctrl+R` reverts a correction, `Ctrl+P` plays the recording.
 `Ctrl+D` in the correction editor opens a quick-fix: say what was heard and what it
 should be, and it replaces every occurrence in that transcript and adds the word
 to the dictionary.
@@ -57,3 +57,9 @@ final text differs from what the speech engine heard:
 
 That's the shape for fine-tuning a cleanup model, or for mining new
 dictionary words.
+
+## Audio
+
+Recordings are OpenWhispr's `audio/OpenWhispr-<time>-<id>.webm` files (Opus).
+owtui plays them with `ffplay`, falling back to `mpv`, then `afplay` (which
+can't decode WebM). Install ffmpeg if neither is present: `brew install ffmpeg`.

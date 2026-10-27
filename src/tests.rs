@@ -342,3 +342,59 @@ fn quick_fix_and_insights_feed_the_dictionary() {
     assert_eq!(app.tab, Tab::History);
     assert_eq!(app.selected_item().unwrap().id, 2);
 }
+
+#[test]
+fn plays_and_stops_a_recording() {
+    use crate::player::Player;
+    let dir = tempfile::tempdir().unwrap();
+    let _state = fake_bridge(dir.path());
+    let audio = dir.path().join("audio");
+    std::fs::create_dir(&audio).unwrap();
+    // Id 2 must not match a file for id 12 or 21.
+    for name in [
+        "OpenWhispr-2026-10-27-18-31-50-12.webm",
+        "OpenWhispr-2026-10-27-18-31-57-2.webm",
+    ] {
+        std::fs::write(audio.join(name), b"").unwrap();
+    }
+    let store = Store::new(
+        dir.path().join("bridge.json"),
+        dir.path().join("transcriptions.db"),
+        dir.path().join("c.json"),
+    );
+    let mut app = App::new(store, dir.path().to_path_buf());
+    let newest = app.selected_item().unwrap();
+    assert_eq!(
+        app.store.audio_path(&newest).unwrap().file_name().unwrap(),
+        "OpenWhispr-2026-10-27-18-31-57-2.webm"
+    );
+
+    // A stand-in player that just waits.
+    app.player = Player::with_commands(vec![("sh".into(), vec!["-c".into(), "sleep 5".into()])]);
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.player.playing, Some(2));
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.player.playing, None);
+
+    // Ctrl+P plays from inside the correction editor too.
+    press(&mut app, KeyCode::Char('e'));
+    ctrl(&mut app, 'p');
+    assert_eq!(app.player.playing, Some(2));
+    assert!(matches!(app.modal, Some(Modal::Correct { .. })));
+    app.player.stop();
+
+    // No recording for id 1; no player installed.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('p'));
+    assert!(app.status.as_ref().unwrap().error);
+    app.player = Player::with_commands(vec![("owtui-no-such-player".into(), vec![])]);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Char('p'));
+    assert!(app
+        .status
+        .as_ref()
+        .unwrap()
+        .text
+        .contains("No audio player"));
+}

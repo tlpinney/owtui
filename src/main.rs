@@ -3,6 +3,7 @@
 mod app;
 mod editor;
 mod insights;
+mod player;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -54,6 +55,7 @@ fn main() -> Result<()> {
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     while !app.quit {
+        app.player.poll();
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Wake now and then so status messages expire.
         if event::poll(Duration::from_millis(500))? {
