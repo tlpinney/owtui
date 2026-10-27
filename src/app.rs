@@ -112,6 +112,10 @@ pub struct App {
     pub player: Player,
     /// Screen cells holding the current tab's list rows, set when drawn.
     pub rows_area: Rect,
+    /// How often to check OpenWhispr's files for changes.
+    pub watch_every: Duration,
+    last_check: Instant,
+    signature: Vec<Option<(u64, std::time::SystemTime)>>,
     /// Where each tab title is drawn, for clicks.
     pub tab_areas: Vec<(Rect, Tab)>,
     /// Dialog buttons as drawn, with the key each one stands for.
@@ -151,6 +155,9 @@ impl App {
             status: None,
             player: Player::default(),
             rows_area: Rect::default(),
+            watch_every: Duration::from_secs(1),
+            last_check: Instant::now(),
+            signature: Vec::new(),
             tab_areas: Vec::new(),
             buttons: Vec::new(),
             preview: None,
@@ -186,6 +193,8 @@ impl App {
     }
 
     fn load_history(&mut self) {
+        // Keep the same transcript selected when new ones arrive above it.
+        let keep = self.selected_item().map(|t| t.id);
         match self.store.transcriptions() {
             Ok((items, live)) => {
                 self.items = items;
@@ -193,8 +202,30 @@ impl App {
             }
             Err(e) => self.fail(format!("Can't read history: {e}")),
         }
+        if let Some(row) = keep.and_then(|id| self.visible().iter().position(|t| t.id == id)) {
+            self.history.select(Some(row));
+        }
         self.clamp_history();
         self.refresh_insights();
+        self.signature = self.store.data_signature();
+    }
+
+    /// Reloads when OpenWhispr's data changed on disk. Called from the event loop.
+    pub fn watch(&mut self) {
+        if self.last_check.elapsed() < self.watch_every {
+            return;
+        }
+        self.last_check = Instant::now();
+        if self.store.data_signature() == self.signature {
+            return;
+        }
+        let known: std::collections::HashSet<i64> = self.items.iter().map(|t| t.id).collect();
+        self.reload();
+        let new = self.items.iter().filter(|t| !known.contains(&t.id)).count();
+        if new > 0 && self.status.as_ref().is_none_or(|s| !s.fresh()) {
+            let s = if new == 1 { "" } else { "s" };
+            self.notify(format!("{new} new transcript{s}"));
+        }
     }
 
     fn load_dictionary(&mut self) {

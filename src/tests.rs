@@ -648,3 +648,37 @@ fn tabs_can_be_clicked() {
         assert_eq!(app.tab, target);
     }
 }
+
+#[test]
+fn picks_up_new_transcripts_when_the_database_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = fake_bridge(dir.path());
+    let db = dir.path().join("transcriptions.db");
+    std::fs::write(&db, b"v1").unwrap();
+    let store = Store::new(
+        dir.path().join("bridge.json"),
+        db.clone(),
+        dir.path().join("c.json"),
+    );
+    let mut app = App::new(store, dir.path().to_path_buf());
+    app.watch_every = std::time::Duration::ZERO;
+    press(&mut app, KeyCode::Down); // select the older entry, id 1
+    assert_eq!(app.selected_item().unwrap().id, 1);
+
+    // Nothing changed on disk: no reload, even if the app has more.
+    state.lock().unwrap()["transcriptions"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, json!({"id": 3, "timestamp": "2026-10-28 09:00:00.000Z", "text": "New one.", "status": "completed"}));
+    app.watch();
+    assert_eq!(app.items.len(), 2);
+
+    // OpenWhispr writes the database: the new transcript appears on top and
+    // the selection stays on the same transcript.
+    std::fs::write(dir.path().join("transcriptions.db-wal"), b"changed").unwrap();
+    app.watch();
+    assert_eq!(app.items.len(), 3);
+    assert_eq!(app.items[0].id, 3);
+    assert_eq!(app.selected_item().unwrap().id, 1);
+    assert_eq!(app.status.as_ref().unwrap().text, "1 new transcript");
+}

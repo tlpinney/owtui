@@ -17,7 +17,7 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub fn app_data_dir() -> PathBuf {
     // Electron's userData: ~/Library/Application Support, ~/.config or %APPDATA%.
@@ -264,6 +264,27 @@ impl Store {
                     .and_then(|s| s.to_str())
                     .is_some_and(|stem| stem.ends_with(&suffix))
             })
+    }
+
+    /// Size and modified time of the database and its write-ahead log.
+    /// OpenWhispr writes every change there, so a different value means
+    /// something changed; checking it costs a stat, not a request.
+    pub fn data_signature(&self) -> Vec<Option<(u64, SystemTime)>> {
+        let wal = self.db_path.with_file_name(format!(
+            "{}-wal",
+            self.db_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+        ));
+        [&self.db_path, &wal]
+            .iter()
+            .map(|p| {
+                fs::metadata(p)
+                    .ok()
+                    .and_then(|m| Some((m.len(), m.modified().ok()?)))
+            })
+            .collect()
     }
 
     pub fn delete_transcription(&self, t: &Transcription) -> Result<()> {

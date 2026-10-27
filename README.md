@@ -26,6 +26,15 @@ just lint                      # fmt --check + clippy -D warnings
   `~/Library/Application Support/open-whispr/transcriptions.db` read-only;
   changes need the app running.
 
+## Staying up to date
+
+OpenWhispr's API has no change feed (neither the local bridge nor the cloud
+API offers "changed since" or events), so owtui watches the size and modified
+time of `transcriptions.db` and its `-wal` file once a second. That's a file
+check, not a request; only when they change does it re-fetch, keeping the
+selected transcript selected. New dictations, deletions and dictionary changes
+made in the app show up on their own; `r` still reloads by hand.
+
 ## Tabs and keys
 
 | Tab | What | Keys |

@@ -59,6 +59,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     let mut pixel_mouse = false;
     while !app.quit {
         app.player.poll();
+        app.watch();
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Wake now and then so status messages expire.
         if event::poll(Duration::from_millis(500))? {
