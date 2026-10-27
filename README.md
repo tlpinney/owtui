@@ -37,7 +37,8 @@ just lint                      # fmt --check + clippy -D warnings
 | Stats | counts, words, audio minutes, models, training pairs | |
 
 `↑↓`/`jk` move, `Tab`/`1`–`5` switch tabs, `x` exports pairs, `r` reloads, `q` quits.
-In editors: `Ctrl+S` saves, `Esc` cancels, `Ctrl+R` reverts a correction, `Ctrl+P` plays the recording.
+Dialogs have clickable buttons (Save, Fix word, Play, Revert, Cancel; Yes/No when
+deleting) that do the same as their keys. In editors: `Ctrl+S` saves, `Esc` cancels, `Ctrl+R` reverts a correction, `Ctrl+P` plays the recording.
 Click a word in the History preview to open the editor with the cursor there;
 double-click to select the word, then type to replace it (`Ctrl+D` fixes it
 everywhere and adds it to the dictionary). In the editor, click to put the cursor anywhere; `⌥←`/`⌥→` (or `Ctrl+←`/`→`) jump by word, `Ctrl+W`

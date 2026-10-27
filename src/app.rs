@@ -112,6 +112,8 @@ pub struct App {
     pub player: Player,
     /// Screen cells holding the current tab's list rows, set when drawn.
     pub rows_area: Rect,
+    /// Dialog buttons as drawn, with the key each one stands for.
+    pub buttons: Vec<(Rect, KeyEvent)>,
     /// The History preview's text, keyed by (id, text), drawn with an editor so clicks map to positions.
     pub preview: Option<((i64, String), TextArea)>,
     last_click: Option<(Instant, u16, u16)>,
@@ -147,6 +149,7 @@ impl App {
             status: None,
             player: Player::default(),
             rows_area: Rect::default(),
+            buttons: Vec::new(),
             preview: None,
             last_click: None,
             quit: false,
@@ -356,6 +359,16 @@ impl App {
                     self.rows_area,
                     self.history.selected()
                 );
+            }
+        }
+        if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+            let button = self
+                .buttons
+                .iter()
+                .find(|(r, _)| r.contains(Position::new(x, y)));
+            if let Some(&(_, key)) = button {
+                self.last_click = None;
+                return self.handle_key(key);
             }
         }
         let mut double = false;

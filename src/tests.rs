@@ -551,3 +551,74 @@ fn pixel_mouse_positions_become_cells() {
     let ev = mouse_to_cells(at(16, 100), size, &mut pixels);
     assert_eq!((ev.column, ev.row), (2, 5));
 }
+
+#[test]
+fn dialog_buttons_can_be_clicked() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, Terminal};
+    let dir = tempfile::tempdir().unwrap();
+    let state = fake_bridge(dir.path());
+    let store = Store::new(
+        dir.path().join("bridge.json"),
+        dir.path().join("none.db"),
+        dir.path().join("c.json"),
+    );
+    let mut app = App::new(store, dir.path().to_path_buf());
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    // Draws, then clicks the button whose label starts with `label`.
+    let mut press_button = |app: &mut App, label: &str| {
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let &(rect, _) = app
+            .buttons
+            .iter()
+            .find(|(r, _)| {
+                (r.x..r.right())
+                    .map(|x| buffer[(x, r.y)].symbol())
+                    .collect::<String>()
+                    .trim_start()
+                    .starts_with(label)
+            })
+            .unwrap_or_else(|| panic!("no {label} button"));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 1,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+
+    // Correction editor: open the quick-fix with its button, back out, then Save.
+    press(&mut app, KeyCode::Char('e'));
+    press_button(&mut app, "Fix word");
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Correct { quick: Some(_), .. })
+    ));
+    press_button(&mut app, "Back");
+    assert!(matches!(
+        app.modal,
+        Some(Modal::Correct { quick: None, .. })
+    ));
+    type_text(&mut app, " Now.");
+    press_button(&mut app, "Save");
+    assert!(app.modal.is_none());
+    assert_eq!(
+        app.visible()[0].correction.as_deref(),
+        Some("Run kube control get pods. Now.")
+    );
+
+    // Delete confirmation: No keeps it, Yes deletes.
+    press(&mut app, KeyCode::Char('d'));
+    press_button(&mut app, "No");
+    assert!(app.modal.is_none());
+    press(&mut app, KeyCode::Char('d'));
+    press_button(&mut app, "Yes");
+    assert_eq!(
+        state.lock().unwrap()["transcriptions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

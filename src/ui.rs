@@ -2,6 +2,7 @@
 
 use crate::app::{one_line, short_time, App, Modal, Tab};
 use crate::editor::TextArea;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -558,9 +559,56 @@ fn focus_block(title: &str, focused: bool) -> Block<'static> {
         .title(format!(" {title} "))
 }
 
+#[derive(Clone, Copy)]
+enum Look {
+    Primary,
+    Plain,
+    Danger,
+}
+
+/// One clickable button: its label, the key it stands for, and its look.
+type ButtonSpec<'a> = (&'a str, KeyEvent, Look);
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+/// Draws a row of buttons and records where each one is, so a click can
+/// replay its key.
+fn draw_buttons(
+    frame: &mut Frame,
+    area: Rect,
+    buttons: &[ButtonSpec],
+    hits: &mut Vec<(Rect, KeyEvent)>,
+) {
+    let mut x = area.x;
+    for (label, key, look) in buttons {
+        let text = format!(" {label} ");
+        let width = Line::raw(text.as_str()).width() as u16;
+        if x + width > area.right() {
+            break;
+        }
+        let style = match look {
+            Look::Primary => Style::new().bg(Color::Blue).fg(Color::White).bold(),
+            Look::Danger => Style::new().bg(Color::Red).fg(Color::White).bold(),
+            Look::Plain => Style::new().bg(Color::DarkGray).fg(Color::White),
+        };
+        let rect = Rect::new(x, area.y, width, 1);
+        frame.render_widget(Span::styled(text, style), rect);
+        hits.push((rect, *key));
+        x += width + 2;
+    }
+}
+
 fn draw_modal(frame: &mut Frame, app: &mut App) {
     let screen = frame.area();
+    let mut hits = Vec::new();
     let Some(modal) = app.modal.as_mut() else {
+        app.buttons = hits;
         return;
     };
     match modal {
@@ -580,9 +628,13 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
                 ));
             let inner = outer.inner(area);
             frame.render_widget(outer, area);
-            let [edit, heard] =
-                Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
-                    .areas(inner);
+            let [edit, heard, _, buttons] = Layout::vertical([
+                Constraint::Percentage(60),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
             editor.render(
                 frame,
                 edit,
@@ -596,16 +648,30 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
                     .block(focus_block("Heard (speech engine, before cleanup)", false)),
                 heard,
             );
+            let mut specs: Vec<ButtonSpec> = vec![
+                ("Save  ^S", ctrl('s'), Look::Primary),
+                ("Fix word → dictionary  ^D", ctrl('d'), Look::Plain),
+                ("Play  ^P", ctrl('p'), Look::Plain),
+            ];
+            if item.correction.is_some() {
+                specs.push(("Revert to app's text  ^R", ctrl('r'), Look::Plain));
+            }
+            specs.push(("Cancel  Esc", key(KeyCode::Esc), Look::Plain));
             if let Some(q) = quick {
-                let area = centered(screen, 64, 8);
+                let area = centered(screen, 64, 10);
                 frame.render_widget(Clear, area);
                 let outer = Block::bordered()
                     .border_style(Style::new().fg(Color::Yellow))
                     .title(" Fix word everywhere + add to dictionary ");
                 let inner = outer.inner(area);
                 frame.render_widget(outer, area);
-                let [heard_area, fixed_area] =
-                    Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(inner);
+                let [heard_area, fixed_area, _, quick_buttons] = Layout::vertical([
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                ])
+                .areas(inner);
                 q.heard.render(
                     frame,
                     heard_area,
@@ -618,17 +684,45 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
                     focus_block("Should be", q.on_fixed),
                     q.on_fixed,
                 );
+                // Only the box on top takes clicks.
+                draw_buttons(frame, buttons, &specs, &mut Vec::new());
+                draw_buttons(
+                    frame,
+                    quick_buttons,
+                    &[
+                        ("Replace + add  Enter", key(KeyCode::Enter), Look::Primary),
+                        ("Back  Esc", key(KeyCode::Esc), Look::Plain),
+                    ],
+                    &mut hits,
+                );
+            } else {
+                draw_buttons(frame, buttons, &specs, &mut hits);
             }
         }
         Modal::Word { original, input } => {
-            let area = centered(screen, 70, 3);
+            let area = centered(screen, 70, 5);
             frame.render_widget(Clear, area);
+            let [field, _, buttons] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
             let title = if original.is_some() {
                 "Edit word"
             } else {
                 "Add words, comma-separated"
             };
-            input.render(frame, area, focus_block(title, true), true);
+            input.render(frame, field, focus_block(title, true), true);
+            draw_buttons(
+                frame,
+                buttons,
+                &[
+                    ("Save  Enter", key(KeyCode::Enter), Look::Primary),
+                    ("Cancel  Esc", key(KeyCode::Esc), Look::Plain),
+                ],
+                &mut hits,
+            );
         }
         Modal::Snippet {
             original,
@@ -638,8 +732,13 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
         } => {
             let area = centered(screen, screen.width * 8 / 10, screen.height * 6 / 10);
             frame.render_widget(Clear, area);
-            let [top, bottom] =
-                Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(area);
+            let [top, bottom, _, buttons] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
             let title = if original.is_some() {
                 "Trigger"
             } else {
@@ -652,20 +751,40 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
                 focus_block("Replacement text", *on_text),
                 *on_text,
             );
+            draw_buttons(
+                frame,
+                buttons,
+                &[
+                    ("Save  ^S", ctrl('s'), Look::Primary),
+                    ("Cancel  Esc", key(KeyCode::Esc), Look::Plain),
+                ],
+                &mut hits,
+            );
         }
         Modal::Confirm { question, .. } => {
-            let area = centered(screen, 76, 7);
+            let area = centered(screen, 76, 8);
             frame.render_widget(Clear, area);
+            let outer = Block::bordered()
+                .border_style(Style::new().fg(Color::Red))
+                .title(" Confirm ");
+            let inner = outer.inner(area);
+            frame.render_widget(outer, area);
+            let [text, buttons] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
             frame.render_widget(
-                Paragraph::new(question.clone())
-                    .wrap(Wrap { trim: false })
-                    .block(
-                        Block::bordered()
-                            .border_style(Style::new().fg(Color::Red))
-                            .title(" Confirm · y / n "),
-                    ),
-                area,
+                Paragraph::new(question.clone()).wrap(Wrap { trim: false }),
+                text,
+            );
+            draw_buttons(
+                frame,
+                buttons,
+                &[
+                    ("Yes  y", key(KeyCode::Char('y')), Look::Danger),
+                    ("No  n", key(KeyCode::Char('n')), Look::Plain),
+                ],
+                &mut hits,
             );
         }
     }
+    app.buttons = hits;
 }
