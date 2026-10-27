@@ -348,7 +348,14 @@ impl App {
             // A third click starts over rather than counting as another double.
             self.last_click = (!double).then(|| (Instant::now(), x, y));
         }
-        if double && self.modal.is_some() {
+        if double && self.modal.is_none() {
+            // The first click selected the row; the second opens it.
+            if self.rows_area.contains(Position::new(x, y)) {
+                self.edit();
+            }
+            return;
+        }
+        if double {
             // The first click already placed the cursor (or opened the editor
             // from the preview, whose layout differs), so select from there.
             match self.modal.as_mut() {
@@ -426,10 +433,6 @@ impl App {
                     Tab::Stats => return,
                 };
                 let target = offset + (y - self.rows_area.y) as usize;
-                if current == Some(target) {
-                    // A click on the selected row works like Enter.
-                    return self.edit();
-                }
                 self.step(target as isize - current.unwrap_or(0) as isize);
             }
             (MouseEventKind::ScrollDown, None) => self.step(1),

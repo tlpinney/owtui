@@ -431,8 +431,18 @@ fn mouse_selects_rows_and_places_the_cursor() {
 
     // Second row of the history table selects the older entry.
     let rows = app.rows_area;
+    // Clicking the row that's already selected keeps it selected, nothing opens.
+    click(&mut app, rows.x + 2, rows.y);
+    assert!(app.modal.is_none());
+    assert_eq!(app.selected_item().unwrap().id, 2);
+    std::thread::sleep(std::time::Duration::from_millis(500));
     click(&mut app, rows.x + 2, rows.y + 1);
     assert_eq!(app.selected_item().unwrap().id, 1);
+    assert!(app.modal.is_none());
+    // A double-click opens it.
+    click(&mut app, rows.x + 2, rows.y + 1);
+    assert!(matches!(app.modal, Some(Modal::Correct { .. })));
+    press(&mut app, KeyCode::Esc);
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollUp,
         column: 0,
