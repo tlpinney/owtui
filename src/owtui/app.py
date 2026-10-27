@@ -1,4 +1,4 @@
-"""owtui: browse and edit OpenWhisper history, dictionary, snippets and prompt."""
+"""owtui: browse and edit OpenWhispr history, dictionary and snippets."""
 
 from __future__ import annotations
 
@@ -7,24 +7,23 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.markup import escape
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button, Checkbox, DataTable, Footer, Header, Input, Label, Static,
-    TabbedContent, TabPane, TextArea,
+    Button, DataTable, Footer, Header, Input, Label, Static, TabbedContent, TabPane, TextArea,
 )
 
-from owtui.store import DB_FILENAME, SETTINGS_FILENAME, Entry, History, Settings, candidate_dirs, find_data_dir
+from owtui.store import BridgeError, Store, Transcription
 
 
 def short_time(iso: str) -> str:
     try:
-        return datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M")
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
     except ValueError:
         return iso[:16]
 
@@ -37,138 +36,92 @@ def one_line(text: str | None, width: int = 80) -> str:
 # ------------------------------------------------------------------ modals
 
 
-class EntryEditor(ModalScreen[dict | None]):
+class Dialog(ModalScreen):
     BINDINGS = [Binding("ctrl+s", "save", "Save"), Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, entry: Entry):
+    def buttons(self) -> ComposeResult:
+        with Horizontal(classes="buttons"):
+            yield Button("Save  ^S", variant="primary", id="save")
+            yield Button("Cancel", id="cancel")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#save")
+    def _save(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+
+class CorrectionEditor(Dialog):
+    """Returns the corrected text, "" to drop the correction, or None."""
+
+    def __init__(self, t: Transcription):
         super().__init__()
-        self.entry = entry
+        self.t = t
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide"):
-            yield Label(f"Edit entry · {short_time(self.entry.timestamp)} · {self.entry.model}")
-            yield Input(self.entry.title or "", placeholder="Title (optional)", id="title")
-            yield Label("Text (what OpenWhisper saved)")
-            yield TextArea(self.entry.text, id="text", soft_wrap=True)
-            if self.entry.raw_text:
-                yield Label("Heard (raw engine output, read-only)")
-                yield TextArea(self.entry.raw_text, id="raw", read_only=True, soft_wrap=True)
+            yield Label(f"Correct transcript · {short_time(self.t.timestamp)} · {self.t.model or ''}")
+            yield Label("What you meant (saved in owtui, used for training)", classes="hint")
+            yield TextArea(self.t.final, id="text", soft_wrap=True)
+            yield Label("Heard (speech engine, before cleanup)", classes="hint")
+            yield TextArea(self.t.heard, id="raw", read_only=True, soft_wrap=True)
             with Horizontal(classes="buttons"):
                 yield Button("Save  ^S", variant="primary", id="save")
+                if self.t.correction is not None:
+                    yield Button("Revert to app's text", id="revert")
                 yield Button("Cancel", id="cancel")
 
     def action_save(self) -> None:
-        self.dismiss({
-            "title": self.query_one("#title", Input).value.strip(),
-            "text": self.query_one("#text", TextArea).text,
-        })
+        self.dismiss(self.query_one("#text", TextArea).text)
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#save")
-    def _save(self) -> None:
-        self.action_save()
-
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
+    @on(Button.Pressed, "#revert")
+    def _revert(self) -> None:
+        self.dismiss("")
 
 
-class TermEditor(ModalScreen[dict | None]):
-    BINDINGS = [Binding("ctrl+s", "save", "Save"), Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, term: dict[str, Any] | None = None):
+class WordEditor(Dialog):
+    def __init__(self, word: str = ""):
         super().__init__()
-        self.term = term or {}
+        self.word = word
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
-            yield Label("Edit word" if self.term else "Add word")
-            yield Input(self.term.get("term", ""), placeholder="Word or phrase, spelled your way", id="term")
-            yield Input(
-                ", ".join(self.term.get("heard") or []),
-                placeholder="Sounds like (comma-separated, e.g. cube control)", id="heard",
-                disabled=bool(self.term.get("learned")),
-            )
-            yield Checkbox("Starred (goes first where space is limited)", self.term.get("starred", False), id="starred")
-            yield Checkbox("Protected (AI cleanup never changes it)", self.term.get("protected", False), id="protected")
-            with Horizontal(classes="buttons"):
-                yield Button("Save  ^S", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
+            yield Label("Edit word" if self.word else "Add words")
+            yield Input(self.word, id="word",
+                        placeholder="Word or phrase" if self.word else "Words, comma-separated")
+            yield from self.buttons()
 
     def action_save(self) -> None:
-        word = " ".join(self.query_one("#term", Input).value.split())
-        if not word:
-            self.notify("A word is required.", severity="error")
-            return
-        heard = [h.strip() for h in self.query_one("#heard", Input).value.split(",") if h.strip()]
-        result = {
-            "term": word[:64],
-            "heard": [] if self.term.get("learned") else heard[:5],
-            "starred": self.query_one("#starred", Checkbox).value,
-            # Reviewed here, so it is no longer new.
-            "new": False,
-        }
-        if self.query_one("#protected", Checkbox).value:
-            result["protected"] = True
-        elif "protected" in self.term:
-            result["protected"] = False
-        if "id" in self.term:
-            result["id"] = self.term["id"]
-        self.dismiss(result)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#save")
-    def _save(self) -> None:
-        self.action_save()
-
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
+        value = self.query_one("#word", Input).value
+        words = [" ".join(value.split())] if self.word else [w.strip() for w in value.split(",")]
+        self.dismiss([w for w in words if w] or None)
 
 
-class SnippetEditor(ModalScreen[dict | None]):
-    BINDINGS = [Binding("ctrl+s", "save", "Save"), Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, snippet: dict[str, Any] | None = None):
+class SnippetEditor(Dialog):
+    def __init__(self, snippet: dict | None = None):
         super().__init__()
         self.snippet = snippet or {}
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide"):
             yield Label("Edit snippet" if self.snippet else "New snippet")
-            yield Input(self.snippet.get("trigger", ""), placeholder="Trigger phrase, e.g. my calendar link", id="trigger")
-            yield TextArea(self.snippet.get("text", ""), id="text", soft_wrap=True)
-            yield Checkbox("Keep formatting (light Markdown)", self.snippet.get("formatted", False), id="formatted")
-            with Horizontal(classes="buttons"):
-                yield Button("Save  ^S", variant="primary", id="save")
-                yield Button("Cancel", id="cancel")
+            yield Input(self.snippet.get("trigger", ""), id="trigger",
+                        placeholder="Trigger phrase, e.g. my calendar link")
+            yield TextArea(self.snippet.get("replacement", ""), id="text", soft_wrap=True)
+            yield from self.buttons()
 
     def action_save(self) -> None:
         trigger = " ".join(self.query_one("#trigger", Input).value.split())
         text = self.query_one("#text", TextArea).text.strip()
-        if len(trigger) < 2 or not text:
-            self.notify("A trigger (2+ characters) and text are required.", severity="error")
+        if not trigger or not text:
+            self.notify("A trigger and text are required.", severity="error")
             return
-        result = {"trigger": trigger[:60], "text": text[:10_000],
-                  "formatted": self.query_one("#formatted", Checkbox).value}
-        if "id" in self.snippet:
-            result["id"] = self.snippet["id"]
-        self.dismiss(result)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    @on(Button.Pressed, "#save")
-    def _save(self) -> None:
-        self.action_save()
-
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
+        self.dismiss({"trigger": trigger, "replacement": text})
 
 
 class Confirm(ModalScreen[bool]):
@@ -200,45 +153,37 @@ class Confirm(ModalScreen[bool]):
 
 
 class OWTui(App):
-    TITLE = "OpenWhisper"
+    TITLE = "OpenWhispr"
     CSS = """
+    ModalScreen { align: center middle; }
     .dialog { width: 70; height: auto; max-height: 90%; padding: 1 2;
               border: thick $accent; background: $surface; }
     .dialog.wide { width: 110; }
     .dialog TextArea { height: 10; }
     .dialog #raw { height: 6; }
-    ModalScreen { align: center middle; }
     .buttons { height: auto; margin-top: 1; }
     .buttons Button { margin-right: 2; }
-    #history-search { margin: 0 0 1 0; }
+    .hint { color: $text-muted; margin-top: 1; }
+    #history-search { margin-bottom: 1; }
     #history-body { height: 1fr; }
     #history-table { width: 3fr; }
     #history-detail { width: 2fr; border-left: solid $panel; padding: 0 1; }
-    #prompt-text { height: 2fr; }
-    #rules-text { height: 1fr; }
-    .hint { color: $text-muted; margin: 1 0 0 0; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "reload", "Reload"),
-        Binding("x", "export", "Export training pairs"),
+        Binding("x", "export", "Export pairs"),
         Binding("e", "edit", "Edit"),
         Binding("a", "add", "Add"),
-        Binding("s", "star", "Star"),
-        Binding("delete,d", "delete", "Delete"),
+        Binding("d,delete", "delete", "Delete"),
         Binding("slash", "search", "Search", show=False),
     ]
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, store: Store):
         super().__init__()
-        self.data_dir = data_dir
-        db = data_dir / DB_FILENAME
-        self.history = History(db) if db.is_file() else None
-        self.settings = Settings(data_dir / SETTINGS_FILENAME)
-        self._entries: dict[str, Entry] = {}
-        self._terms: dict[str, dict] = {}
+        self.store = store
+        self._items: dict[str, Transcription] = {}
         self._snippets: dict[str, dict] = {}
-        self.sub_title = str(data_dir)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -253,93 +198,73 @@ class OWTui(App):
                 yield DataTable(id="dict-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Snippets", id="tab-snippets"):
                 yield DataTable(id="snip-table", cursor_type="row", zebra_stripes=True)
-            with TabPane("Prompt", id="tab-prompt"):
-                yield Label("Custom cleanup prompt (empty = the built-in preset for your cleanup level)")
-                yield TextArea(id="prompt-text", soft_wrap=True)
-                yield Label("Learned cleanup rules, one per line (max 50)", classes="hint")
-                yield TextArea(id="rules-text", soft_wrap=True)
-                with Horizontal(classes="buttons"):
-                    yield Button("Save prompt & rules", variant="primary", id="save-prompt")
-                    yield Button("Revert", id="revert-prompt")
             with TabPane("Stats", id="tab-stats"):
                 yield Static(id="stats")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#history-table", DataTable).add_columns("When", "App", "Kind", "Text")
-        self.query_one("#dict-table", DataTable).add_columns("★", "Word", "Sounds like", "Flags")
-        self.query_one("#snip-table", DataTable).add_columns("Trigger", "Text", "Fmt")
+        self.query_one("#history-table", DataTable).add_columns("When", "Model", "Sec", "Text")
+        self.query_one("#dict-table", DataTable).add_columns("Word")
+        self.query_one("#snip-table", DataTable).add_columns("Trigger", "Replacement")
         self.action_reload()
 
     # ---- loading
 
     def action_reload(self) -> None:
         self.load_history()
-        self.load_dictionary()
-        self.load_snippets()
-        self.load_prompt()
+        self.load_list("#dict-table")
+        self.load_list("#snip-table")
         self.load_stats()
 
     def load_history(self) -> None:
         table = self.query_one("#history-table", DataTable)
         table.clear()
-        self._entries.clear()
-        if not self.history:
-            self.query_one("#history-preview", Static).update(f"No {DB_FILENAME} in {self.data_dir}")
-            return
+        self._items.clear()
         search = self.query_one("#history-search", Input).value.strip()
-        for entry in self.history.entries(search):
-            self._entries[entry.id] = entry
-            mark = "✎ " if entry.edited else ""
-            table.add_row(
-                short_time(entry.timestamp), entry.app_name or "", entry.entry_kind or "",
-                mark + one_line(entry.title or entry.text), key=entry.id,
-            )
+        for t in self.store.transcriptions(search):
+            self._items[str(t.id)] = t
+            mark = "✎ " if t.correction is not None else ""
+            secs = f"{t.audio_duration_ms / 1000:.0f}" if t.audio_duration_ms else ""
+            table.add_row(short_time(t.timestamp), t.model or t.provider or "", secs,
+                          mark + one_line(t.final), key=str(t.id))
+        self.sub_title = "live" if self.store.live else "read-only (OpenWhispr not running)"
         self.show_preview()
 
-    def load_dictionary(self) -> None:
-        table = self.query_one("#dict-table", DataTable)
+    def load_list(self, table_id: str) -> None:
+        table = self.query_one(table_id, DataTable)
         table.clear()
-        self._terms.clear()
-        for term in self.settings.dictionary():
-            tid = term.get("id") or term["term"]
-            self._terms[tid] = term
-            flags = [f for f in ("learned", "new", "protected") if term.get(f)]
-            table.add_row(
-                "★" if term.get("starred") else "", term["term"],
-                ", ".join(term.get("heard") or []), " ".join(flags), key=tid,
-            )
-
-    def load_snippets(self) -> None:
-        table = self.query_one("#snip-table", DataTable)
-        table.clear()
-        self._snippets.clear()
-        for snip in self.settings.snippets():
-            sid = snip.get("id") or snip.get("trigger", "")
-            self._snippets[sid] = snip
-            table.add_row(snip.get("trigger", ""), one_line(snip.get("text"), 70),
-                          "✓" if snip.get("formatted") else "", key=sid)
-
-    def load_prompt(self) -> None:
-        self.query_one("#prompt-text", TextArea).text = self.settings.prompt()
-        self.query_one("#rules-text", TextArea).text = "\n".join(self.settings.rules())
+        try:
+            if table_id == "#dict-table":
+                for word in self.store.dictionary():
+                    table.add_row(word, key=word)
+            else:
+                self._snippets.clear()
+                for s in self.store.snippets():
+                    self._snippets[s["trigger"]] = s
+                    table.add_row(s["trigger"], one_line(s.get("replacement"), 90), key=s["trigger"])
+        except BridgeError as exc:
+            table.add_row(f"({exc})", *([""] * (len(table.columns) - 1)))
 
     def load_stats(self) -> None:
-        lines = [f"Data folder: {self.data_dir}", ""]
-        if self.history:
-            s = self.history.stats()
-            lines += [
-                f"Transcripts:     {s['count']}",
-                f"First:           {short_time(s['first']) if s['first'] else '-'}",
-                f"Latest:          {short_time(s['last']) if s['last'] else '-'}",
-                f"Audio:           {s['audio_seconds'] / 60:.1f} min",
-                f"Edited (pairs):  {sum(1 for _ in self.history.training_pairs())}",
-                "", "Top apps:",
-            ] + [f"  {name:<24} {n}" for name, n in s["by_app"]]
-        lines += ["", f"Dictionary words: {len(self.settings.dictionary())}",
-                  f"Snippets:         {len(self.settings.snippets())}",
-                  f"Cleanup rules:    {len(self.settings.rules())}"]
-        self.query_one("#stats", Static).update("\n".join(lines))
+        items = self.store.transcriptions()
+        audio = sum(t.audio_duration_ms or 0 for t in items) / 60000
+        words = sum(len(t.final.split()) for t in items)
+        models: dict[str, int] = {}
+        for t in items:
+            models[t.model or t.provider or "?"] = models.get(t.model or t.provider or "?", 0) + 1
+        lines = [
+            f"Transcripts:        {len(items)}",
+            f"Words:              {words}",
+            f"Audio:              {audio:.1f} min",
+            f"First:              {short_time(items[-1].timestamp) if items else '-'}",
+            f"Latest:             {short_time(items[0].timestamp) if items else '-'}",
+            f"Cleaned by AI:      {sum(1 for t in items if t.raw_text and t.raw_text.strip() != t.text.strip())}",
+            f"Your corrections:   {sum(1 for t in items if t.correction is not None)}",
+            f"Training pairs:     {sum(1 for t in items if t.changed and t.status == 'completed')}",
+            "", "Models:",
+        ] + [f"  {m:<28} {n}" for m, n in sorted(models.items(), key=lambda kv: -kv[1])]
+        lines += ["", f"Corrections file: {self.store.corrections.path}"]
+        self.query_one("#stats", Static).update(escape("\n".join(lines)))
 
     # ---- history
 
@@ -357,21 +282,27 @@ class OWTui(App):
             return None
         return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
 
+    def _current_item(self) -> Transcription | None:
+        key = self._current_key("#history-table")
+        return self._items.get(key) if key else None
+
     def show_preview(self) -> None:
         preview = self.query_one("#history-preview", Static)
-        key = self._current_key("#history-table")
-        entry = self._entries.get(key) if key else None
-        if not entry:
+        t = self._current_item()
+        if not t:
             preview.update("")
             return
-        meta = [short_time(entry.timestamp), entry.model]
-        if entry.cleanup_level:
-            meta.append(f"cleanup: {entry.cleanup_level}")
-        if entry.audio_duration:
-            meta.append(f"{entry.audio_duration:.1f}s")
-        body = [f"[b]{entry.title or 'Untitled'}[/b]", "[dim]" + " · ".join(meta) + "[/dim]", "", entry.text]
-        if entry.edited:
-            body += ["", "[dim]── heard ──[/dim]", f"[dim]{entry.raw_text}[/dim]"]
+        meta = [short_time(t.timestamp), t.model or t.provider or ""]
+        if t.audio_duration_ms:
+            meta.append(f"{t.audio_duration_ms / 1000:.1f}s")
+        body = ["[dim]" + escape(" · ".join(meta)) + "[/dim]", ""]
+        if t.correction is not None:
+            body += ["[b]Your correction[/b]", escape(t.correction), "",
+                     "[dim]── app saved ──[/dim]", f"[dim]{escape(t.text)}[/dim]"]
+        else:
+            body.append(escape(t.text))
+        if t.raw_text and t.raw_text.strip() != t.text.strip():
+            body += ["", "[dim]── heard (before cleanup) ──[/dim]", f"[dim]{escape(t.raw_text)}[/dim]"]
         preview.update("\n".join(body))
 
     def action_search(self) -> None:
@@ -385,19 +316,17 @@ class OWTui(App):
         return self.query_one("#tabs", TabbedContent).active
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # Single-letter keys type into inputs and text areas, not trigger actions.
-        if action in {"edit", "add", "star", "delete", "reload", "export", "quit", "search"}:
-            if isinstance(self.focused, (Input, TextArea)):
-                return False
+        # Letter keys belong to the focused text field.
+        if isinstance(self.focused, (Input, TextArea)) and action in {
+            "edit", "add", "delete", "reload", "export", "quit", "search",
+        }:
+            return False
         allowed = {
             "edit": {"tab-history", "tab-dictionary", "tab-snippets"},
             "add": {"tab-dictionary", "tab-snippets"},
-            "star": {"tab-dictionary"},
             "delete": {"tab-history", "tab-dictionary", "tab-snippets"},
         }
-        if action in allowed:
-            return self.tab in allowed[action]
-        return True
+        return self.tab in allowed[action] if action in allowed else True
 
     @on(TabbedContent.TabActivated)
     def _tab_changed(self) -> None:
@@ -406,127 +335,96 @@ class OWTui(App):
     def on_descendant_focus(self) -> None:
         self.refresh_bindings()
 
-    def action_edit(self) -> None:
-        if self.tab == "tab-history":
-            key = self._current_key("#history-table")
-            if key and (entry := self._entries.get(key)):
-                def done(result: dict | None) -> None:
-                    if result and self.history:
-                        self.history.update(entry.id, text=result["text"], title=result["title"])
-                        self.notify("Entry saved.")
-                        self.load_history()
-                self.push_screen(EntryEditor(entry), done)
-        elif self.tab == "tab-dictionary":
-            key = self._current_key("#dict-table")
-            if key:
-                self._edit_term(self._terms[key])
-        elif self.tab == "tab-snippets":
-            key = self._current_key("#snip-table")
-            if key:
-                self._edit_snippet(self._snippets[key])
+    def _bridge(self, change, reload) -> None:
+        """Run a change that needs the running app, then refresh."""
+        try:
+            change()
+        except BridgeError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        reload()
 
     @on(DataTable.RowSelected)
     def _row_selected(self) -> None:
         self.action_edit()
 
+    def action_edit(self) -> None:
+        if self.tab == "tab-history":
+            if t := self._current_item():
+                def done(text: str | None) -> None:
+                    if text is not None:
+                        self.store.correct(t, text or None)
+                        self.notify("Correction saved." if text else "Correction removed.")
+                        self.load_history()
+                self.push_screen(CorrectionEditor(t), done)
+        elif self.tab == "tab-dictionary":
+            if (word := self._current_key("#dict-table")) and not word.startswith("("):
+                def done_word(words: list[str] | None) -> None:
+                    if words and words[0] != word:
+                        self._bridge(lambda: self.store.update_dictionary(add=words, remove=[word]),
+                                     lambda: self.load_list("#dict-table"))
+                self.push_screen(WordEditor(word), done_word)
+        elif self.tab == "tab-snippets":
+            if (key := self._current_key("#snip-table")) and key in self._snippets:
+                def done_snip(s: dict | None) -> None:
+                    if s:
+                        remove = [key] if s["trigger"].lower() != key.lower() else []
+                        self._bridge(lambda: self.store.update_snippets(add=[s], remove=remove),
+                                     lambda: self.load_list("#snip-table"))
+                self.push_screen(SnippetEditor(self._snippets[key]), done_snip)
+
     def action_add(self) -> None:
         if self.tab == "tab-dictionary":
-            self._edit_term(None)
+            def done(words: list[str] | None) -> None:
+                if words:
+                    self._bridge(lambda: self.store.update_dictionary(add=words),
+                                 lambda: self.load_list("#dict-table"))
+            self.push_screen(WordEditor(), done)
         elif self.tab == "tab-snippets":
-            self._edit_snippet(None)
-
-    def _edit_term(self, term: dict | None) -> None:
-        def done(result: dict | None) -> None:
-            if result:
-                lowered = result["term"].casefold()
-                if any(t["term"].casefold() == lowered and t.get("id") != result.get("id")
-                       for t in self._terms.values()):
-                    self.notify(f"“{result['term']}” is already in the dictionary.", severity="warning")
-                    return
-                self.settings.save_term(result)
-                self.notify("Dictionary saved.")
-                self.load_dictionary()
-        self.push_screen(TermEditor(term), done)
-
-    def _edit_snippet(self, snippet: dict | None) -> None:
-        def done(result: dict | None) -> None:
-            if result:
-                self.settings.save_snippet(result)
-                self.notify("Snippet saved.")
-                self.load_snippets()
-        self.push_screen(SnippetEditor(snippet), done)
-
-    def action_star(self) -> None:
-        key = self._current_key("#dict-table")
-        if key and (term := self._terms.get(key)) and term.get("id"):
-            self.settings.save_term({"id": term["id"], "starred": not term.get("starred")})
-            self.load_dictionary()
+            def done_snip(s: dict | None) -> None:
+                if s:
+                    self._bridge(lambda: self.store.update_snippets(add=[s]),
+                                 lambda: self.load_list("#snip-table"))
+            self.push_screen(SnippetEditor(), done_snip)
 
     def action_delete(self) -> None:
         if self.tab == "tab-history":
-            key = self._current_key("#history-table")
-            entry = self._entries.get(key) if key else None
-            if not entry or not self.history:
+            t = self._current_item()
+            if not t:
                 return
-            question = f"Delete this transcript?\n\n{one_line(entry.text, 60)}"
-            remove = lambda: self.history.delete(entry.id)
-            reload = self.load_history
+            question = f"Delete this transcript from OpenWhispr?\n\n{one_line(t.final, 60)}"
+            change, reload = (lambda: self.store.delete_transcription(t)), self.load_history
         elif self.tab == "tab-dictionary":
-            key = self._current_key("#dict-table")
-            term = self._terms.get(key) if key else None
-            if not term or not term.get("id"):
+            word = self._current_key("#dict-table")
+            if not word or word.startswith("("):
                 return
-            question = f"Remove “{term['term']}” from the dictionary?"
-            remove = lambda: self.settings.delete_term(term["id"])
-            reload = self.load_dictionary
+            question = f"Remove “{word}” from the dictionary?"
+            change, reload = (lambda: self.store.update_dictionary(remove=[word])), (lambda: self.load_list("#dict-table"))
         elif self.tab == "tab-snippets":
             key = self._current_key("#snip-table")
-            snip = self._snippets.get(key) if key else None
-            if not snip or not snip.get("id"):
+            if not key or key not in self._snippets:
                 return
-            question = f"Delete snippet “{snip.get('trigger')}”?"
-            remove = lambda: self.settings.delete_snippet(snip["id"])
-            reload = self.load_snippets
+            question = f"Delete snippet “{key}”?"
+            change, reload = (lambda: self.store.update_snippets(remove=[key])), (lambda: self.load_list("#snip-table"))
         else:
             return
 
         def done(yes: bool) -> None:
             if yes:
-                remove()
-                reload()
-                self.notify("Deleted.")
+                self._bridge(change, reload)
         self.push_screen(Confirm(question), done)
-
-    # ---- prompt
-
-    @on(Button.Pressed, "#save-prompt")
-    def _save_prompt(self) -> None:
-        rules = self.query_one("#rules-text", TextArea).text.splitlines()
-        if len([r for r in rules if r.strip()]) > 50:
-            self.notify("OpenWhisper keeps at most 50 rules; extras would be ignored.", severity="warning")
-        self.settings.save_prompt_and_rules(self.query_one("#prompt-text", TextArea).text, rules)
-        self.notify("Prompt and rules saved.")
-        self.load_prompt()
-
-    @on(Button.Pressed, "#revert-prompt")
-    def _revert_prompt(self) -> None:
-        self.load_prompt()
 
     # ---- export
 
     def action_export(self) -> None:
-        if not self.history:
-            self.notify("No history database.", severity="error")
-            return
-        out = Path.cwd() / f"openwhisper-pairs-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
-        count = export_pairs(self.history, out)
-        self.notify(f"Wrote {count} raw→final pairs to {out}", timeout=8)
+        out = Path.cwd() / f"openwhispr-pairs-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
+        self.notify(f"Wrote {export_pairs(self.store, out)} pairs to {out}", timeout=8)
 
 
-def export_pairs(history: History, out: Path) -> int:
+def export_pairs(store: Store, out: Path) -> int:
     count = 0
     with open(out, "w", encoding="utf-8") as fh:
-        for pair in history.training_pairs():
+        for pair in store.training_pairs():
             fh.write(json.dumps(pair, ensure_ascii=False) + "\n")
             count += 1
     return count
@@ -534,21 +432,15 @@ def export_pairs(history: History, out: Path) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="owtui", description=__doc__)
-    parser.add_argument("--data-dir", help="OpenWhisper data folder (default: auto-detect)")
-    parser.add_argument("--export", metavar="FILE", help="write raw→final training pairs as JSONL and exit")
+    parser.add_argument("--export", metavar="FILE", help="write heard→final training pairs as JSONL and exit")
     args = parser.parse_args()
-
-    data_dir = find_data_dir(args.data_dir)
-    if not data_dir:
-        tried = "\n  ".join(str(p) for p in candidate_dirs(args.data_dir))
-        sys.exit(f"No OpenWhisper data found. Looked in:\n  {tried}\n"
-                 "Pass --data-dir or set OPENWHISPER_DATA_DIR.")
+    store = Store()
     if args.export:
-        if not (data_dir / DB_FILENAME).is_file():
-            sys.exit(f"No {DB_FILENAME} in {data_dir}")
-        print(f"{export_pairs(History(data_dir / DB_FILENAME), Path(args.export))} pairs written")
+        print(f"{export_pairs(store, Path(args.export))} pairs written to {args.export}")
         return
-    OWTui(data_dir).run()
+    if not store.db_path.is_file() and not store.bridge.bridge_file.is_file():
+        sys.exit(f"No OpenWhispr data found at {store.db_path}")
+    OWTui(store).run()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 [project]
 name = "owtui"
 version = "0.1.0"
-description = "Terminal UI for browsing and editing OpenWhisper history, dictionary, snippets and cleanup prompt"
+description = "Terminal UI for browsing and editing OpenWhispr history, dictionary and snippets"
 requires-python = ">=3.11"
 dependencies = ["textual>=0.80"]
 

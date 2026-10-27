@@ -1,45 +1,47 @@
 # owtui
 
-A small terminal UI for OpenWhisper's local data: browse and edit what you've
-dictated, and manage the dictionary, snippets and cleanup prompt.
+A small terminal UI for [OpenWhispr](https://github.com/OpenWhispr/openwhispr):
+browse what you've dictated, correct it, and manage the dictionary and
+snippets.
 
 ```bash
-uv run owtui                      # auto-detects the data folder
-uv run owtui --data-dir PATH      # or point at one
-uv run owtui --export pairs.jsonl # dump raw→final pairs and exit
-uv run owtui --data-dir sample-data   # try it on the bundled sample
+uv run owtui                       # open the TUI
+uv run owtui --export pairs.jsonl  # write training pairs and exit
 ```
 
-Data folder lookup: `--data-dir`, `$OPENWHISPER_DATA_DIR`,
-`~/Library/Application Support/OpenWhisper` (macOS; `%LOCALAPPDATA%\OpenWhisper`
-on Windows, `~/.local/share/OpenWhisper` on Linux), then `~/code/OpenWhisper`
-(source checkout).
+## How it talks to OpenWhispr
+
+- **Live:** through the app's CLI bridge, a local HTTP API on 127.0.0.1
+  described in `~/.openwhispr/cli-bridge.json`. Dictionary, snippet and delete
+  changes show up in the running app right away and sync like edits made there.
+  OpenWhispr's code warns against writing its SQLite tables by hand, so owtui never does.
+- **App closed:** history is read from
+  `~/Library/Application Support/open-whispr/transcriptions.db` read-only;
+  changes need the app running.
 
 ## Tabs and keys
 
 | Tab | What | Keys |
 | --- | --- | --- |
-| History | search, preview, edit text/title, delete | `/` search, `e`/Enter edit, `d` delete |
-| Dictionary | words, "sounds like" variants, star, protect | `a` add, `e` edit, `s` star, `d` delete |
-| Snippets | trigger → text | `a` add, `e` edit, `d` delete |
-| Prompt | custom cleanup prompt + learned rules | Save button |
-| Stats | counts, top apps, number of edited pairs | |
+| History | search, preview (app text, heard text, your correction), correct, delete | `/` search, `e`/Enter correct, `d` delete |
+| Dictionary | words that steer recognition and cleanup | `a` add (comma-separated), `e` rename, `d` delete |
+| Snippets | trigger → replacement text | `a` add, `e` edit, `d` delete |
+| Stats | counts, words, audio minutes, models, training pairs | |
 
-`x` exports training pairs, `r` reloads, `q` quits. `✎` marks history
-entries whose saved text differs from what the engine heard.
+`x` exports pairs, `r` reloads, `q` quits.
 
-## How edits are written
+## Corrections and training
 
-- History: `UPDATE` on `transcription_history` in `openwhisper.db` (`text`,
-  `title`). `raw_text` is never touched, so each edit becomes a better
-  raw→final training pair.
-- Settings: read-modify-write of `openwhisper_settings.json` with an atomic
-  replace. The app re-reads the file on change, so this is safe while it
-  runs. The first change in a session copies the file to
-  `openwhisper_settings.json.owtui.bak`.
+OpenWhispr can't change a transcript's text from outside, so corrections live
+in owtui's own file, `~/.local/share/owtui/corrections.json`, and are marked
+`✎` in History. The export writes one JSON line per transcript where the
+final text differs from what the speech engine heard:
 
-## Training (later)
+```json
+{"id": 22, "timestamp": "...", "model": "orukeet-v0.1.0",
+ "input": "<heard>", "output": "<your correction, else the app's cleaned text>",
+ "corrected": true}
+```
 
-`--export` / `x` writes JSONL with `{id, timestamp, app, input, output}` where
-`input` is the raw engine text and `output` the final text, which is the shape for
-fine-tuning a cleanup model or mining new dictionary words.
+That's the shape for fine-tuning a cleanup model, or for mining new
+dictionary words.

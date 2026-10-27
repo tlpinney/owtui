@@ -1,265 +1,233 @@
-"""Read and edit OpenWhisper's data files without importing the app.
+"""OpenWhispr data access for owtui.
 
-History lives in ``openwhisper.db`` (table ``transcription_history``);
-the dictionary, snippets, cleanup prompt and learned rules live in
-``openwhisper_settings.json``. The app re-reads the settings file when it
-changes on disk and mutates it from a fresh read, so writing it atomically
-here is safe while the app runs.
+Live data goes through OpenWhispr's CLI bridge, a local HTTP API the app
+starts on 127.0.0.1 and describes in ``~/.openwhispr/cli-bridge.json``. Going
+through it keeps the running app's windows and cloud sync up to date; the
+app's own code warns that writing its SQLite tables by hand loses rows on the
+next launch. When the app isn't running, history is read from
+``transcriptions.db`` read-only and edits are refused.
+
+OpenWhispr has no way to change a transcript's text from outside, so
+corrections made here are kept in owtui's own file. They overlay the app's
+text in the UI and are the "output" side of exported training pairs.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import sqlite3
 import sys
 import tempfile
-import uuid
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator, Sequence
 
-APP_NAME = "OpenWhisper"
-SETTINGS_FILENAME = "openwhisper_settings.json"
-DB_FILENAME = "openwhisper.db"
-
-# Settings keys, mirrored from OpenWhisper's services/settings.py.
-KEY_DICTIONARY = "dictation_dictionary"
-KEY_SNIPPETS = "dictation_snippets"
-KEY_PROMPT = "transcript_cleanup_prompt"
-KEY_RULES = "transcript_cleanup_rules"
+BRIDGE_FILE = Path("~/.openwhispr/cli-bridge.json").expanduser()
 
 
-def platform_data_dir() -> Path:
-    """OpenWhisper's per-user directory, as config.local_app_dir() picks it."""
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    elif sys.platform == "darwin":
-        base = os.path.expanduser("~/Library/Application Support")
+def app_data_dir() -> Path:
+    """Electron's userData folder for OpenWhispr."""
+    if sys.platform == "darwin":
+        base = Path("~/Library/Application Support").expanduser()
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or Path.home())
     else:
-        base = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
-    return Path(base) / APP_NAME
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+    return base / "open-whispr"
 
 
-def candidate_dirs(explicit: str | None = None) -> list[Path]:
-    found: list[Path] = []
-    if explicit:
-        found.append(Path(explicit).expanduser())
-    if env := os.environ.get("OPENWHISPER_DATA_DIR"):
-        found.append(Path(env).expanduser())
-    found.append(platform_data_dir())
-    # A source checkout keeps its own data next to the code.
-    found.append(Path("~/code/OpenWhisper").expanduser())
-    return found
+def owtui_dir() -> Path:
+    base = os.environ.get("XDG_DATA_HOME") or "~/.local/share"
+    return Path(base).expanduser() / "owtui"
 
 
-def find_data_dir(explicit: str | None = None) -> Path | None:
-    """The first candidate holding a settings file or database."""
-    for folder in candidate_dirs(explicit):
-        if (folder / SETTINGS_FILENAME).is_file() or (folder / DB_FILENAME).is_file():
-            return folder
-    return None
+class BridgeError(RuntimeError):
+    pass
 
 
-# ---------------------------------------------------------------- history
+class Bridge:
+    def __init__(self, bridge_file: Path = BRIDGE_FILE, timeout: float = 5):
+        self.bridge_file = bridge_file
+        self.timeout = timeout
+
+    def _endpoint(self) -> tuple[str, str]:
+        # Re-read every call: the app writes a new port and token on each launch.
+        try:
+            info = json.loads(self.bridge_file.read_text())
+            return f"http://127.0.0.1:{int(info['port'])}", str(info["token"])
+        except (OSError, ValueError, KeyError) as exc:
+            raise BridgeError("OpenWhispr isn't running (no CLI bridge file).") from exc
+
+    def request(self, method: str, path: str, body: Any = None) -> Any:
+        base, token = self._endpoint()
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            base + path, data=data, method=method,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                message = json.loads(exc.read())["error"]["message"]
+            except Exception:
+                message = f"HTTP {exc.code}"
+            raise BridgeError(message) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise BridgeError("Can't reach OpenWhispr. Is it running?") from exc
+        return json.loads(raw)["data"] if raw else None
 
 
 @dataclass
-class Entry:
-    id: str
+class Transcription:
+    id: int
     timestamp: str
     text: str
     raw_text: str | None
-    cleaned_text: str | None
-    title: str | None
-    model: str
-    app_name: str | None
-    entry_kind: str | None
-    cleanup_level: str | None
-    audio_duration: float | None
-    audio_file: str | None
+    provider: str | None
+    model: str | None
+    audio_duration_ms: int | None
+    has_audio: bool
+    status: str
+    client_id: str | None
+    correction: str | None = None
 
     @property
-    def edited(self) -> bool:
-        """The saved text differs from what the engine heard."""
-        return bool(self.raw_text) and self.raw_text.strip() != self.text.strip()
+    def final(self) -> str:
+        """What you meant: your correction, else the app's text."""
+        return self.correction if self.correction is not None else self.text
+
+    @property
+    def heard(self) -> str:
+        """What the speech engine wrote before AI cleanup."""
+        return self.raw_text or self.text
+
+    @property
+    def changed(self) -> bool:
+        return self.heard.strip() != self.final.strip()
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> "Transcription":
+        return cls(
+            id=int(row["id"]), timestamp=row.get("timestamp") or row.get("created_at") or "",
+            text=row.get("text") or "", raw_text=row.get("raw_text"),
+            provider=row.get("provider"), model=row.get("model"),
+            audio_duration_ms=row.get("audio_duration_ms"),
+            has_audio=bool(row.get("has_audio")), status=row.get("status") or "",
+            client_id=row.get("client_transcription_id"),
+        )
 
 
-_ENTRY_COLUMNS = (
-    "id, timestamp, text, raw_text, cleaned_text, title, model, app_name, "
-    "entry_kind, cleanup_level, audio_duration, audio_file"
-)
+class Corrections:
+    """owtui's own edits, keyed by transcription id, in a JSON file."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or owtui_dir() / "corrections.json"
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _write(self, data: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self.path.parent, suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp, self.path)
+
+    def set(self, t: Transcription, text: str | None) -> None:
+        data = self.load()
+        if text is None or text.strip() == t.text.strip():
+            data.pop(str(t.id), None)
+        else:
+            data[str(t.id)] = {
+                "text": text, "app_text": t.text, "raw_text": t.raw_text,
+                "client_id": t.client_id, "timestamp": t.timestamp,
+                "edited_at": datetime.now(timezone.utc).isoformat(),
+            }
+        self._write(data)
 
 
-class History:
-    def __init__(self, db_path: Path):
-        self.path = db_path
+class Store:
+    def __init__(self, bridge: Bridge | None = None, db_path: Path | None = None,
+                 corrections: Corrections | None = None):
+        self.bridge = bridge or Bridge()
+        self.db_path = db_path or app_data_dir() / "transcriptions.db"
+        self.corrections = corrections or Corrections()
+        self.live = False
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=5)
+    # ---- history
+
+    def _rows_from_db(self, limit: int) -> list[dict[str, Any]]:
+        if not self.db_path.is_file():
+            return []
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=5)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM transcriptions WHERE deleted_at IS NULL AND status != 'discarded' "
+                "ORDER BY timestamp DESC LIMIT ?", (limit,))]
+        finally:
+            conn.close()
 
-    def _columns(self, conn: sqlite3.Connection) -> set[str]:
-        return {row[1] for row in conn.execute("PRAGMA table_info(transcription_history)")}
+    def transcriptions(self, search: str = "", limit: int = 5000) -> list[Transcription]:
+        try:
+            rows = self.bridge.request("GET", f"/v1/transcriptions/list?limit={limit}")
+            self.live = True
+        except BridgeError:
+            rows = self._rows_from_db(limit)
+            self.live = False
+        fixes = self.corrections.load()
+        items = []
+        for row in rows:
+            t = Transcription.from_row(row)
+            # The client id guards against a recreated database reusing ids.
+            if (fix := fixes.get(str(t.id))) and fix.get("client_id") in (None, t.client_id):
+                t.correction = fix["text"]
+            items.append(t)
+        if search:
+            needle = search.casefold()
+            items = [t for t in items if needle in f"{t.final}\n{t.heard}".casefold()]
+        return items
 
-    def entries(self, search: str = "", limit: int = 1000) -> list[Entry]:
-        with self._connect() as conn:
-            have = self._columns(conn)
-            # Older schemas lack the v17 context columns; read them as NULL.
-            cols = ", ".join(
-                c if c in have else f"NULL AS {c}" for c in _ENTRY_COLUMNS.split(", ")
-            )
-            sql = f"SELECT {cols} FROM transcription_history"
-            args: list[Any] = []
-            if search:
-                like = f"%{search}%"
-                sql += " WHERE text LIKE ? OR raw_text LIKE ? OR title LIKE ?"
-                args += [like, like, like]
-            sql += " ORDER BY timestamp DESC LIMIT ?"
-            args.append(limit)
-            return [Entry(**dict(row)) for row in conn.execute(sql, args)]
+    def correct(self, t: Transcription, text: str | None) -> None:
+        self.corrections.set(t, text)
 
-    def update(self, entry_id: str, *, text: str, title: str | None) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE transcription_history SET text = ?, title = ? WHERE id = ?",
-                (text, title or None, entry_id),
-            )
-
-    def delete(self, entry_id: str) -> None:
-        # Leaves any recording on disk; the app prunes recordings by its own rules.
-        with self._connect() as conn:
-            conn.execute("DELETE FROM transcription_history WHERE id = ?", (entry_id,))
-
-    def stats(self) -> dict[str, Any]:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*), MIN(timestamp), MAX(timestamp), "
-                "COALESCE(SUM(audio_duration), 0) FROM transcription_history"
-            ).fetchone()
-            by_app = conn.execute(
-                "SELECT COALESCE(app_name, '(unknown)'), COUNT(*) FROM transcription_history "
-                "GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
-            ).fetchall() if "app_name" in self._columns(conn) else []
-        return {
-            "count": row[0], "first": row[1], "last": row[2],
-            "audio_seconds": row[3], "by_app": by_app,
-        }
+    def delete_transcription(self, t: Transcription) -> None:
+        self.bridge.request("DELETE", f"/v1/transcriptions/{t.id}")
+        self.corrections.set(t, None)
 
     def training_pairs(self) -> Iterator[dict[str, Any]]:
-        """Entries whose saved text differs from what the engine heard."""
-        for entry in self.entries(limit=1_000_000):
-            if entry.edited:
+        for t in self.transcriptions():
+            if t.changed and t.status == "completed":
                 yield {
-                    "id": entry.id,
-                    "timestamp": entry.timestamp,
-                    "app": entry.app_name,
-                    "input": entry.raw_text,
-                    "output": entry.text,
+                    "id": t.id, "timestamp": t.timestamp, "model": t.model,
+                    "input": t.heard, "output": t.final,
+                    "corrected": t.correction is not None,
                 }
 
+    # ---- dictionary: a list of words
 
-# --------------------------------------------------------------- settings
+    def dictionary(self) -> list[str]:
+        return list(self.bridge.request("GET", "/v1/dictionary/list"))
 
+    def update_dictionary(self, add: Sequence[str] = (), remove: Sequence[str] = ()) -> list[str]:
+        return self.bridge.request("POST", "/v1/dictionary/update",
+                                   {"add": list(add), "remove": list(remove)})["words"]
 
-class Settings:
-    """Read-modify-write access to openwhisper_settings.json."""
-
-    def __init__(self, path: Path):
-        self.path = path
-        self._backed_up = False
-
-    def load(self) -> dict[str, Any]:
-        if not self.path.is_file():
-            return {}
-        with open(self.path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-
-    def mutate(self, change: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
-        """Apply ``change`` to a fresh read and replace the file atomically."""
-        settings = self.load()
-        change(settings)
-        if self.path.is_file() and not self._backed_up:
-            # One backup per session, taken before the first change.
-            shutil.copy2(self.path, self.path.with_name(self.path.name + ".owtui.bak"))
-            self._backed_up = True
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".owtui-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(settings, fh, indent=2, ensure_ascii=False)
-            os.replace(tmp, self.path)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
-        return settings
-
-    # Dictionary: newest first, {id, term, starred, heard, learned, new[, protected]}.
-
-    def dictionary(self) -> list[dict[str, Any]]:
-        raw = self.load().get(KEY_DICTIONARY)
-        return [t for t in raw if isinstance(t, dict) and t.get("term")] if isinstance(raw, list) else []
-
-    def save_term(self, term: dict[str, Any]) -> None:
-        def change(settings: dict[str, Any]) -> None:
-            terms = [t for t in settings.get(KEY_DICTIONARY) or [] if isinstance(t, dict)]
-            for i, existing in enumerate(terms):
-                if existing.get("id") == term.get("id"):
-                    terms[i] = {**existing, **term}
-                    break
-            else:
-                terms.insert(0, {
-                    "id": uuid.uuid4().hex[:12], "starred": False, "heard": [],
-                    "learned": False, "new": False, **term,
-                })
-            settings[KEY_DICTIONARY] = terms
-        self.mutate(change)
-
-    def delete_term(self, term_id: str) -> None:
-        self.mutate(lambda s: s.__setitem__(
-            KEY_DICTIONARY,
-            [t for t in s.get(KEY_DICTIONARY) or [] if not (isinstance(t, dict) and t.get("id") == term_id)],
-        ))
-
-    # Snippets: saved order, {id, trigger, text, formatted}.
+    # ---- snippets: {trigger, replacement}
 
     def snippets(self) -> list[dict[str, Any]]:
-        raw = self.load().get(KEY_SNIPPETS)
-        return [s for s in raw if isinstance(s, dict)] if isinstance(raw, list) else []
+        return list(self.bridge.request("GET", "/v1/snippets/list"))
 
-    def save_snippet(self, snippet: dict[str, Any]) -> None:
-        def change(settings: dict[str, Any]) -> None:
-            snippets = [s for s in settings.get(KEY_SNIPPETS) or [] if isinstance(s, dict)]
-            for i, existing in enumerate(snippets):
-                if existing.get("id") == snippet.get("id"):
-                    snippets[i] = {**existing, **snippet}
-                    break
-            else:
-                snippets.append({"id": uuid.uuid4().hex[:12], "formatted": False, **snippet})
-            settings[KEY_SNIPPETS] = snippets
-        self.mutate(change)
-
-    def delete_snippet(self, snippet_id: str) -> None:
-        self.mutate(lambda s: s.__setitem__(
-            KEY_SNIPPETS,
-            [x for x in s.get(KEY_SNIPPETS) or [] if not (isinstance(x, dict) and x.get("id") == snippet_id)],
-        ))
-
-    # Cleanup prompt ("" means the built-in preset for the chosen level) and rules.
-
-    def prompt(self) -> str:
-        value = self.load().get(KEY_PROMPT)
-        return value if isinstance(value, str) else ""
-
-    def rules(self) -> list[str]:
-        raw = self.load().get(KEY_RULES)
-        return [r for r in raw if isinstance(r, str) and r.strip()] if isinstance(raw, list) else []
-
-    def save_prompt_and_rules(self, prompt: str, rules: list[str]) -> None:
-        def change(settings: dict[str, Any]) -> None:
-            settings[KEY_PROMPT] = prompt.strip()
-            settings[KEY_RULES] = [r.strip() for r in rules if r.strip()]
-        self.mutate(change)
+    def update_snippets(self, add: Sequence[dict[str, str]] = (), remove: Sequence[str] = ()) -> None:
+        self.bridge.request("POST", "/v1/snippets/update",
+                            {"add": list(add), "remove": list(remove)})
