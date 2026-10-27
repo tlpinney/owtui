@@ -27,3 +27,6 @@ affiliated with or endorsed by OpenWhispr.
   change, keeping the selected transcript selected.
 - **Mouse:** tabs, rows, preview words, editor text and dialog buttons are all
   clickable; works around herdr passing mouse positions in pixels.
+- **Releases:** prebuilt binaries for macOS and Linux (aarch64, x86_64), with
+  GitHub build provenance and an offline SSH signature on `SHA256SUMS`, and an
+  installer that verifies both before installing.

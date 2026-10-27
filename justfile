@@ -15,3 +15,7 @@ install:
 
 run:
     cargo run --locked
+
+# Sign SHA256SUMS of a draft release made by CI and publish it.
+sign-release tag:
+    scripts/sign-release.sh {{tag}}

@@ -1,0 +1,51 @@
+name: ci
+
+# Every push to main and every pull request: format, lint and tests on Linux
+# and macOS, then the same four release builds the release workflow makes, so
+# a broken target shows up before a tag does.
+#
+# Actions are pinned to full commit SHAs; the comment shows the release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  build:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - { asset: macos-aarch64, target: aarch64-apple-darwin, os: macos-latest }
+          - { asset: macos-x86_64, target: x86_64-apple-darwin, os: macos-latest }
+          - { asset: linux-x86_64, target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { asset: linux-aarch64, target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Smoke test
+        if: matrix.asset != 'macos-x86_64'
+        run: target/${{ matrix.target }}/release/owtui --version

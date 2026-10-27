@@ -1,0 +1,3 @@
+# Keys trusted to sign owtui releases (ssh-keygen -Y verify -f signing/allowed_signers).
+# Namespace: owtui-release. Signer identity: tlpinney
+tlpinney namespaces="owtui-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFSZDt6uNCxuvSttHDBUcV1dctXJ1DBwYnQdbk19FfFP

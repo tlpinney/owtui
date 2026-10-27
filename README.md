@@ -9,17 +9,47 @@ snippets.
 > to OpenWhispr. It is also unrelated to the similarly named
 > [OpenWhisper](https://github.com/Knuckles92/OpenWhisper) project.
 
+## Install
+
+Prebuilt, signed binaries for macOS and Linux (Apple Silicon/Intel, x86_64/arm64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tlpinney/owtui/main/scripts/install.sh | sh
+```
+
+The installer downloads the latest release for your platform and installs it
+to `~/.local/bin` (set `OWTUI_INSTALL_DIR` to change that) only after
+verifying the maintainer's SSH signature on `SHA256SUMS` and the archive's
+checksum. Pass a version to pin one: `sh install.sh v0.1.0`. It needs
+`ssh-keygen` (OpenSSH) and `curl` or `wget`.
+
+Or build from source with Rust:
+
+```bash
+cargo install --git https://github.com/tlpinney/owtui --locked
+```
+
+Then:
+
+```bash
+owtui                          # open the TUI
+owtui --export pairs.jsonl     # write training pairs and exit
+owtui --version
+```
+
+## Development
+
 Rust + [Ratatui](https://ratatui.rs), on the same toolchain as herdr
 (`rust-toolchain.toml` pins 1.96.1; `just` for tasks).
 
 ```bash
 just install                   # cargo install into ~/.cargo/bin
-owtui                          # open the TUI
-owtui --export pairs.jsonl     # write training pairs and exit
-
 just test                      # cargo nextest (fake bridge, never real data)
 just lint                      # fmt --check + clippy -D warnings
 ```
+
+CI runs the checks on Linux and macOS and builds all four release targets on
+every push to `main`.
 
 ## How it talks to OpenWhispr
 
@@ -100,6 +130,36 @@ The Privacy tab, and the ● badge at the top right, read OpenWhispr's own files
 Chromium's localStorage log. OpenWhispr only uploads when you're signed in
 **and** cloud backup is on **and** you have a subscription; the tab turns red
 if that or any upload happens, and yellow if a cloud engine is selected.
+
+## Releasing
+
+1. Bump `version` in `Cargo.toml`, add a `## X.Y.Z` section to `CHANGELOG.md`,
+   commit and push.
+2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. The release
+   workflow checks the tag matches `Cargo.toml`, runs the tests, builds the
+   four binaries, records
+   [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations),
+   and creates a **draft** release with `SHA256SUMS` and the CHANGELOG section
+   as notes.
+3. Sign and publish from a machine holding the release key:
+   `just sign-release vX.Y.Z`. It re-checks every archive, signs `SHA256SUMS`
+   with `~/.ssh/id_ed25519` (or `OWTUI_SIGNING_KEY`), verifies the signature
+   against `signing/allowed_signers`, uploads `SHA256SUMS.sig`, and publishes.
+
+CI never has the signing key, so a compromised workflow can't produce a
+release the installer accepts.
+
+## Verifying a release by hand
+
+```bash
+ssh-keygen -Y verify -f signing/allowed_signers -I tlpinney -n owtui-release \
+  -s SHA256SUMS.sig < SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+gh attestation verify owtui-macos-aarch64.tar.gz --repo tlpinney/owtui
+```
+
+The trusted key ships in this repository (and in `scripts/install.sh`), so it
+protects against tampered releases, not against a compromised repository.
 
 ## Known limits
 
