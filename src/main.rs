@@ -4,6 +4,7 @@ mod app;
 mod editor;
 mod insights;
 mod player;
+mod privacy;
 mod store;
 #[cfg(test)]
 mod tests;

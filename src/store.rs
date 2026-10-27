@@ -277,7 +277,23 @@ impl Store {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
         ));
-        [&self.db_path, &wal]
+        // Settings and the account session live beside it; watch them for the Privacy tab.
+        let dir = self
+            .db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let mut files = vec![self.db_path.clone(), wal, dir.join("Cookies")];
+        if let Ok(entries) = fs::read_dir(dir.join("Local Storage/leveldb")) {
+            let mut logs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "log" || e == "ldb"))
+                .collect();
+            logs.sort();
+            files.extend(logs);
+        }
+        files
             .iter()
             .map(|p| {
                 fs::metadata(p)

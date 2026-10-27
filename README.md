@@ -44,8 +44,9 @@ made in the app show up on their own; `r` still reloads by hand.
 | Dictionary | words that steer recognition and cleanup | `a` add (comma-separated), `e` rename, `d` delete |
 | Snippets | trigger → replacement text | `a` add, `e` edit, `d` delete |
 | Stats | counts, words, audio minutes, models, training pairs | |
+| Privacy | signed in?, cloud backup, usage-stats sync, whether speech and cleanup run on this Mac, what has already left the Mac, what would upload if backup were turned on | `r` recheck |
 
-`↑↓`/`jk` move, `Tab`/`1`–`5` switch tabs, `x` exports pairs, `r` reloads, `q` quits.
+`↑↓`/`jk` move, `Tab`/`1`–`6` switch tabs, `x` exports pairs, `r` reloads, `q` quits.
 Dialogs have clickable buttons (Save, Fix word, Play, Revert, Cancel; Yes/No when
 deleting) that do the same as their keys. In editors: `Ctrl+S` saves, `Esc` cancels, `Ctrl+R` reverts a correction, `Ctrl+P` plays the recording.
 Click a word in the History preview to open the editor with the cursor there;
@@ -85,3 +86,12 @@ can't decode WebM). Install ffmpeg if neither is present: `brew install ffmpeg`.
 Set `OWTUI_MOUSE_LOG=/path/to/file` to log every mouse event with where the
 list is drawn. Some hosts (herdr, when its terminal reports pixels) send
 positions in pixels instead of cells; owtui detects that and converts them.
+
+## Privacy
+
+The Privacy tab, and the ● badge at the top right, read OpenWhispr's own files
+(read-only): per-row `cloud_id` and `sync_status` in `transcriptions.db`, the
+`Cookies` store for an account session, and the app's settings from
+Chromium's localStorage log. OpenWhispr only uploads when you're signed in
+**and** cloud backup is on **and** you have a subscription; the tab turns red
+if that or any upload happens, and yellow if a cloud engine is selected.

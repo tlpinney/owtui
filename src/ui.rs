@@ -2,6 +2,7 @@
 
 use crate::app::{one_line, short_time, App, Modal, Tab};
 use crate::editor::TextArea;
+use crate::privacy::Verdict;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -37,7 +38,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
     // Tabs and the app label share the first row; a block title there would
     // take a row of its own and push the tabs behind the border.
-    let label = Line::from(vec![" OpenWhispr ".bold(), mode]).right_aligned();
+    let badge = match app.privacy.verdict() {
+        Verdict::Private(_) => Span::styled(" ● private ", Style::new().fg(Color::Green)),
+        Verdict::Warning(_) => Span::styled(" ● check privacy ", Style::new().fg(Color::Yellow)),
+        Verdict::Alert(_) => Span::styled(" ● cloud ", Style::new().fg(Color::Red).bold()),
+    };
+    let label = Line::from(vec![badge, " OpenWhispr ".bold(), mode]).right_aligned();
     let [row, rule] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(top);
     let [tabs_area, label_area] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(label.width() as u16)])
@@ -80,6 +86,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Dictionary => draw_dictionary(frame, app, body),
         Tab::Snippets => draw_snippets(frame, app, body),
         Tab::Stats => draw_stats(frame, app, body),
+        Tab::Privacy => draw_privacy(frame, app, body),
     }
     draw_footer(frame, app, foot);
     draw_modal(frame, app);
@@ -470,6 +477,114 @@ fn draw_stats(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_privacy(frame: &mut Frame, app: &App, area: Rect) {
+    let p = &app.privacy;
+    let dim = Style::new().dark_gray();
+    let (good, warn, bad) = (
+        Style::new().fg(Color::Green),
+        Style::new().fg(Color::Yellow),
+        Style::new().fg(Color::Red).bold(),
+    );
+    let row = |label: &str, value: Span<'static>, note: &str| {
+        Line::from(vec![
+            Span::styled(format!("  {label:<30}"), dim),
+            value,
+            Span::styled(format!("  {note}"), dim),
+        ])
+    };
+    let unknown = || Span::styled("unknown", warn);
+    let yes_no = |v: Option<bool>, bad_when: bool| match v {
+        Some(v) if v == bad_when => Span::styled(if v { "on" } else { "off" }, warn),
+        Some(v) => Span::styled(if v { "on" } else { "off" }, good),
+        None => unknown(),
+    };
+    let engine = |e: &Option<String>| match e.as_deref() {
+        Some("local") => Span::styled("on this Mac", good),
+        Some("off") => Span::styled("off", good),
+        Some(other) => Span::styled(other.to_string(), bad),
+        None => unknown(),
+    };
+    let counts = |c: &crate::privacy::Counts| {
+        format!(
+            "{} transcripts · {} words · {} snippets · {} notes · {} usage events",
+            c.transcripts, c.words, c.snippets, c.notes, c.usage_events
+        )
+    };
+    let section = |title: &str| Line::styled(format!("  {title}"), Style::new().fg(ACCENT).bold());
+
+    let (verdict, style) = match p.verdict() {
+        Verdict::Private(v) => (format!("✓ {v}"), good.bold()),
+        Verdict::Warning(v) => (format!("! {v}"), warn.bold()),
+        Verdict::Alert(v) => (format!("✗ {v}"), bad),
+    };
+    let signed_in = match (p.signed_in, p.session_cookies) {
+        (Some(true), _) | (_, 1..) => Span::styled("yes", warn),
+        (Some(false), 0) => Span::styled("no", good),
+        (None, 0) => unknown(),
+    };
+    let uploaded = if p.uploaded.total() == 0 {
+        Span::styled("nothing", good)
+    } else {
+        Span::styled(counts(&p.uploaded), bad)
+    };
+    let cloud_engine = if p.cloud_transcribed == 0 {
+        Span::styled("none", good)
+    } else {
+        Span::styled(format!("{} transcripts", p.cloud_transcribed), warn)
+    };
+    let first = p
+        .first_cloud
+        .as_deref()
+        .map(|t| format!("first on {}", short_time(t)))
+        .unwrap_or_default();
+
+    let mut lines = vec![
+        Line::raw(""),
+        Line::styled(format!("  {verdict}"), style),
+        Line::raw(""),
+        section("Account and sync"),
+        row(
+            "Signed in",
+            signed_in,
+            &format!("{} session cookies", p.session_cookies),
+        ),
+        row(
+            "Cloud backup",
+            yes_no(p.cloud_backup, true),
+            "uploads need signed in + backup on + subscription",
+        ),
+        row(
+            "Usage stats sync",
+            yes_no(p.usage_sync, true),
+            "needs signed in + insights sync on",
+        ),
+        Line::raw(""),
+        section("Where new dictations are processed"),
+        row("Speech recognition", engine(&p.speech), ""),
+        row("AI cleanup", engine(&p.cleanup), ""),
+        Line::raw(""),
+        section("Already left this Mac"),
+        row("Uploaded by sync", uploaded, ""),
+        row("Recognised by a cloud engine", cloud_engine, &first),
+        Line::raw(""),
+        section("Would upload if cloud backup were turned on"),
+        Line::styled(format!("  {}", counts(&p.pending)), dim),
+    ];
+    if p.settings_partial {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "  Some older settings are in compacted files owtui can't read; check OpenWhispr's settings to be sure.",
+            warn,
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" Privacy ")),
+        area,
+    );
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(status) = app.status.as_ref().filter(|s| s.fresh()) {
         let color = if status.error {
@@ -545,6 +660,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("q", "quit"),
         ],
         (None, Tab::Stats) => &[("x", "export pairs"), ("Tab", "next tab"), ("q", "quit")],
+        (None, Tab::Privacy) => &[("r", "recheck"), ("Tab", "next tab"), ("q", "quit")],
     };
     let mut spans = vec![Span::raw(" ")];
     for (k, label) in hints {

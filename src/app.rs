@@ -3,6 +3,7 @@
 use crate::editor::TextArea;
 use crate::insights::{self, Insights};
 use crate::player::Player;
+use crate::privacy::{self, Privacy};
 use crate::store::{Snippet, Store, Transcription};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -19,15 +20,17 @@ pub enum Tab {
     Dictionary,
     Snippets,
     Stats,
+    Privacy,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::History,
         Tab::Insights,
         Tab::Dictionary,
         Tab::Snippets,
         Tab::Stats,
+        Tab::Privacy,
     ];
 
     pub fn title(self) -> &'static str {
@@ -37,6 +40,7 @@ impl Tab {
             Tab::Dictionary => "Dictionary",
             Tab::Snippets => "Snippets",
             Tab::Stats => "Stats",
+            Tab::Privacy => "Privacy",
         }
     }
 
@@ -112,6 +116,7 @@ pub struct App {
     pub player: Player,
     /// Screen cells holding the current tab's list rows, set when drawn.
     pub rows_area: Rect,
+    pub privacy: Privacy,
     /// How often to check OpenWhispr's files for changes.
     pub watch_every: Duration,
     last_check: Instant,
@@ -155,6 +160,7 @@ impl App {
             status: None,
             player: Player::default(),
             rows_area: Rect::default(),
+            privacy: Privacy::default(),
             watch_every: Duration::from_secs(1),
             last_check: Instant::now(),
             signature: Vec::new(),
@@ -187,6 +193,9 @@ impl App {
     // ---- loading
 
     pub fn reload(&mut self) {
+        if let Some(dir) = self.store.db_path.parent() {
+            self.privacy = privacy::read(dir);
+        }
         self.load_history();
         self.load_dictionary();
         self.load_snippets();
@@ -349,7 +358,7 @@ impl App {
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 self.switch(Tab::ALL.len() - 1)
             }
-            KeyCode::Char(c @ '1'..='5') => self.tab = Tab::ALL[c as usize - '1' as usize],
+            KeyCode::Char(c @ '1'..='6') => self.tab = Tab::ALL[c as usize - '1' as usize],
             KeyCode::Char('/') => {
                 self.tab = Tab::History;
                 self.searching = true;
@@ -504,7 +513,7 @@ impl App {
                     Tab::Insights => (self.patterns.offset(), self.patterns.selected()),
                     Tab::Dictionary => (self.dict.offset(), self.dict.selected()),
                     Tab::Snippets => (self.snips.offset(), self.snips.selected()),
-                    Tab::Stats => return,
+                    Tab::Stats | Tab::Privacy => return,
                 };
                 let target = offset + (y - self.rows_area.y) as usize;
                 self.step(target as isize - current.unwrap_or(0) as isize);
@@ -543,7 +552,7 @@ impl App {
             Tab::Insights => self.insights.patterns.len(),
             Tab::Dictionary => self.words.as_ref().map_or(0, Vec::len),
             Tab::Snippets => self.snippets.as_ref().map_or(0, Vec::len),
-            Tab::Stats => return,
+            Tab::Stats | Tab::Privacy => return,
         };
         let state = match self.tab {
             Tab::History => &mut self.history,
@@ -612,7 +621,7 @@ impl App {
                 original: Some(s.trigger),
                 on_text: false,
             }),
-            Tab::Insights | Tab::Stats => None,
+            Tab::Insights | Tab::Stats | Tab::Privacy => None,
         };
     }
 
@@ -672,7 +681,7 @@ impl App {
                 ),
                 None => return,
             },
-            Tab::Insights | Tab::Stats => return,
+            Tab::Insights | Tab::Stats | Tab::Privacy => return,
         };
         self.modal = Some(Modal::Confirm { question, action });
     }

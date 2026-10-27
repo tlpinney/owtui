@@ -682,3 +682,82 @@ fn picks_up_new_transcripts_when_the_database_changes() {
     assert_eq!(app.selected_item().unwrap().id, 1);
     assert_eq!(app.status.as_ref().unwrap().text, "1 new transcript");
 }
+
+#[test]
+fn privacy_reads_sync_state_engines_and_uploads() {
+    use crate::privacy::{self, Verdict};
+    let dir = tempfile::tempdir().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("transcriptions.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE transcriptions (id INTEGER PRIMARY KEY, timestamp TEXT, provider TEXT,
+           cloud_id TEXT, sync_status TEXT, deleted_at TEXT);
+         CREATE TABLE custom_dictionary (id INTEGER PRIMARY KEY, cloud_id TEXT, sync_status TEXT, deleted_at TEXT);
+         CREATE TABLE snippets (id INTEGER PRIMARY KEY, cloud_id TEXT, sync_status TEXT, deleted_at TEXT);
+         CREATE TABLE notes (id INTEGER PRIMARY KEY, cloud_id TEXT, sync_status TEXT, deleted_at TEXT);
+         CREATE TABLE analytics_events (event_id TEXT, sync_status TEXT, deleted_at TEXT);
+         INSERT INTO transcriptions VALUES (1,'2026-10-26 21:59:33.812Z','openwhispr',NULL,'pending',NULL);
+         INSERT INTO transcriptions VALUES (2,'2026-10-27 02:01:56.465Z','local-parakeet',NULL,'pending',NULL);
+         INSERT INTO custom_dictionary VALUES (1,NULL,'pending',NULL);
+         INSERT INTO analytics_events VALUES ('a','pending',NULL);",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("Local Storage/leveldb")).unwrap();
+    let log = dir.path().join("Local Storage/leveldb/000003.log");
+    privacy::tests::write_log(
+        &log,
+        &[
+            ("isSignedIn", Some("true")),
+            ("isSignedIn", Some("false")),
+            ("useLocalWhisper", Some("true")),
+            ("cleanupMode", Some("local")),
+            ("insightsSyncEnabled", Some("false")),
+        ],
+    );
+
+    let p = privacy::read(dir.path());
+    assert_eq!(
+        (p.signed_in, p.cloud_backup, p.usage_sync),
+        (Some(false), Some(false), Some(false))
+    );
+    assert_eq!(
+        (p.speech.as_deref(), p.cleanup.as_deref()),
+        (Some("local"), Some("local"))
+    );
+    assert_eq!(p.cloud_transcribed, 1);
+    assert_eq!(p.uploaded.total(), 0);
+    assert_eq!(
+        (
+            p.pending.transcripts,
+            p.pending.words,
+            p.pending.usage_events
+        ),
+        (2, 1, 1)
+    );
+    assert!(matches!(p.verdict(), Verdict::Private(_)));
+
+    // Signing in with backup on, or an uploaded row, raises the alarm.
+    privacy::tests::write_log(
+        &log,
+        &[
+            ("isSignedIn", Some("true")),
+            ("cloudBackupEnabled", Some("true")),
+        ],
+    );
+    assert!(matches!(
+        privacy::read(dir.path()).verdict(),
+        Verdict::Alert(_)
+    ));
+    privacy::tests::write_log(
+        &log,
+        &[
+            ("isSignedIn", Some("false")),
+            ("useLocalWhisper", Some("true")),
+            ("cleanupMode", Some("local")),
+        ],
+    );
+    conn.execute("UPDATE transcriptions SET cloud_id = 'c1' WHERE id = 2", [])
+        .unwrap();
+    let p = privacy::read(dir.path());
+    assert_eq!(p.uploaded.transcripts, 1);
+    assert!(matches!(p.verdict(), Verdict::Alert(_)));
+}
