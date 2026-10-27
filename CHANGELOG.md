@@ -2,8 +2,9 @@
 
 ## 0.1.0 — 2026-10-27
 
-First release. A terminal UI (Rust + Ratatui) for
-[OpenWhispr](https://github.com/OpenWhispr/openwhispr) dictation history.
+First release. An unofficial terminal UI (Rust + Ratatui) for
+[OpenWhispr](https://github.com/OpenWhispr/openwhispr) dictation history, not
+affiliated with or endorsed by OpenWhispr.
 
 - **History:** search, preview, play recordings, correct transcripts, delete.
   Corrections are kept in owtui's own file and never change OpenWhispr's text.

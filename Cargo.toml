@@ -2,7 +2,7 @@
 name = "owtui"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal UI for reviewing and correcting OpenWhispr dictation history"
+description = "Unofficial terminal UI for reviewing and correcting OpenWhispr dictation history (not affiliated with OpenWhispr)"
 license = "Apache-2.0"
 readme = "README.md"
 keywords = ["openwhispr", "dictation", "tui", "ratatui"]

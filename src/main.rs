@@ -20,6 +20,7 @@ use store::Store;
 
 const USAGE: &str = "\
 owtui: browse and edit OpenWhispr history, dictionary and snippets
+Unofficial; not affiliated with or endorsed by OpenWhispr.
 
 Usage:
   owtui                  open the TUI

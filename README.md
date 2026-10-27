@@ -1,8 +1,13 @@
 # owtui
 
-A small terminal UI for [OpenWhispr](https://github.com/OpenWhispr/openwhispr):
+An **unofficial** terminal UI for [OpenWhispr](https://github.com/OpenWhispr/openwhispr):
 browse what you've dictated, correct it, and manage the dictionary and
 snippets.
+
+> owtui is an independent project. It is not affiliated with, endorsed by, or
+> supported by OpenWhispr or its developers. Please don't report owtui problems
+> to OpenWhispr. It is also unrelated to the similarly named
+> [OpenWhisper](https://github.com/Knuckles92/OpenWhisper) project.
 
 Rust + [Ratatui](https://ratatui.rs), on the same toolchain as herdr
 (`rust-toolchain.toml` pins 1.96.1; `just` for tasks).
@@ -112,6 +117,15 @@ if that or any upload happens, and yellow if a cloud engine is selected.
 - Mouse positions sent in pixels (herdr does this) are detected and converted;
   a click in the top-left few pixels before any other mouse event may be
   misread.
+
+## Disclaimer
+
+owtui is an unofficial, community-made tool. It is not affiliated with,
+endorsed by, sponsored by, or supported by OpenWhispr or its developers.
+"OpenWhispr" is used only to say which app owtui works with; the name and any
+marks belong to their respective owners. owtui relies on OpenWhispr's local
+CLI bridge and file layout, which may change without notice and break it.
+Use at your own risk.
 
 ## License
 
