@@ -2,6 +2,7 @@
 
 mod app;
 mod editor;
+mod insights;
 mod store;
 #[cfg(test)]
 mod tests;

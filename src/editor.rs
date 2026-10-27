@@ -42,6 +42,35 @@ impl TextArea {
         self.lines.join("\n")
     }
 
+    /// Replaces the text, keeping the cursor where it can stay.
+    pub fn set_text(&mut self, text: &str) {
+        let (row, col) = (self.row, self.col);
+        *self = Self::new(text, self.multiline);
+        self.row = row.min(self.lines.len() - 1);
+        self.col = col.min(self.len(self.row));
+    }
+
+    /// The word under or just before the cursor.
+    pub fn word_at_cursor(&self) -> String {
+        let is_word = |c: char| c.is_alphanumeric() || c == '\'' || c == '-';
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let mut at = self.col.min(chars.len());
+        if at > 0 && (at == chars.len() || !is_word(chars[at])) && is_word(chars[at - 1]) {
+            at -= 1;
+        }
+        if at >= chars.len() || !is_word(chars[at]) {
+            return String::new();
+        }
+        let (mut start, mut end) = (at, at);
+        while start > 0 && is_word(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && is_word(chars[end]) {
+            end += 1;
+        }
+        chars[start..end].iter().collect()
+    }
+
     fn len(&self, row: usize) -> usize {
         self.lines[row].chars().count()
     }

@@ -1,6 +1,7 @@
 //! App state and key handling, kept free of terminal I/O so tests can drive it.
 
 use crate::editor::TextArea;
+use crate::insights::{self, Insights};
 use crate::store::{Snippet, Store, Transcription};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
@@ -10,17 +11,25 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     History,
+    Insights,
     Dictionary,
     Snippets,
     Stats,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::History, Tab::Dictionary, Tab::Snippets, Tab::Stats];
+    pub const ALL: [Tab; 5] = [
+        Tab::History,
+        Tab::Insights,
+        Tab::Dictionary,
+        Tab::Snippets,
+        Tab::Stats,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::History => "History",
+            Tab::Insights => "Insights",
             Tab::Dictionary => "Dictionary",
             Tab::Snippets => "Snippets",
             Tab::Stats => "Stats",
@@ -36,6 +45,7 @@ pub enum Modal {
     Correct {
         item: Transcription,
         editor: TextArea,
+        quick: Option<Box<QuickFix>>,
     },
     Word {
         original: Option<String>,
@@ -51,6 +61,13 @@ pub enum Modal {
         question: String,
         action: Pending,
     },
+}
+
+/// Fix a misheard phrase everywhere in the transcript and add the right word to the dictionary.
+pub struct QuickFix {
+    pub heard: TextArea,
+    pub fixed: TextArea,
+    pub on_fixed: bool,
 }
 
 pub enum Pending {
@@ -84,6 +101,8 @@ pub struct App {
     pub dict: TableState,
     pub snippets: Result<Vec<Snippet>, String>,
     pub snips: TableState,
+    pub insights: Insights,
+    pub patterns: TableState,
     pub modal: Option<Modal>,
     pub status: Option<Status>,
     pub quit: bool,
@@ -112,6 +131,8 @@ impl App {
             dict: TableState::default(),
             snippets: Ok(Vec::new()),
             snips: TableState::default(),
+            insights: Insights::default(),
+            patterns: TableState::default(),
             modal: None,
             status: None,
             quit: false,
@@ -153,11 +174,33 @@ impl App {
             Err(e) => self.fail(format!("Can't read history: {e}")),
         }
         self.clamp_history();
+        self.refresh_insights();
     }
 
     fn load_dictionary(&mut self) {
         self.words = self.store.dictionary().map_err(|e| e.to_string());
         clamp(&mut self.dict, self.words.as_ref().map_or(0, Vec::len));
+        self.refresh_insights();
+    }
+
+    fn refresh_insights(&mut self) {
+        let words = self.words.as_deref().unwrap_or(&[]);
+        self.insights = insights::analyze(&self.items, words);
+        clamp(&mut self.patterns, self.insights.patterns.len());
+    }
+
+    /// Adds `word` unless the dictionary already has it; true when added.
+    fn add_word(&mut self, word: &str) -> anyhow::Result<bool> {
+        let known = self.words.as_deref().unwrap_or(&[]);
+        if known
+            .iter()
+            .any(|w| w.to_lowercase() == word.to_lowercase())
+        {
+            return Ok(false);
+        }
+        self.store.update_dictionary(&[word.to_string()], &[])?;
+        self.load_dictionary();
+        Ok(true)
     }
 
     fn load_snippets(&mut self) {
@@ -233,8 +276,10 @@ impl App {
             }
             KeyCode::Char('x') => self.export(),
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => self.switch(1),
-            KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => self.switch(3),
-            KeyCode::Char(c @ '1'..='4') => self.tab = Tab::ALL[c as usize - '1' as usize],
+            KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                self.switch(Tab::ALL.len() - 1)
+            }
+            KeyCode::Char(c @ '1'..='5') => self.tab = Tab::ALL[c as usize - '1' as usize],
             KeyCode::Char('/') => {
                 self.tab = Tab::History;
                 self.searching = true;
@@ -263,12 +308,14 @@ impl App {
     fn step(&mut self, delta: isize) {
         let len = match self.tab {
             Tab::History => self.visible().len(),
+            Tab::Insights => self.insights.patterns.len(),
             Tab::Dictionary => self.words.as_ref().map_or(0, Vec::len),
             Tab::Snippets => self.snippets.as_ref().map_or(0, Vec::len),
             Tab::Stats => return,
         };
         let state = match self.tab {
             Tab::History => &mut self.history,
+            Tab::Insights => &mut self.patterns,
             Tab::Dictionary => &mut self.dict,
             _ => &mut self.snips,
         };
@@ -280,11 +327,32 @@ impl App {
         state.select(Some(next as usize));
     }
 
+    fn selected_pattern(&self) -> Option<insights::Pattern> {
+        self.patterns
+            .selected()
+            .and_then(|i| self.insights.patterns.get(i).cloned())
+    }
+
+    /// Shows a pattern's newest example on History, ready to correct.
+    fn open_example(&mut self) {
+        let Some(pattern) = self.selected_pattern() else {
+            return;
+        };
+        self.search = TextArea::new("", false);
+        let row = self.visible().iter().position(|t| t.id == pattern.example);
+        self.history.select(row);
+        self.tab = Tab::History;
+    }
+
     fn edit(&mut self) {
+        if self.tab == Tab::Insights {
+            return self.open_example();
+        }
         self.modal = match self.tab {
             Tab::History => self.selected_item().map(|item| Modal::Correct {
                 editor: TextArea::new(item.final_text(), true),
                 item,
+                quick: None,
             }),
             Tab::Dictionary => self.selected_word().map(|w| Modal::Word {
                 input: TextArea::new(&w, false),
@@ -296,11 +364,25 @@ impl App {
                 original: Some(s.trigger),
                 on_text: false,
             }),
-            Tab::Stats => None,
+            Tab::Insights | Tab::Stats => None,
         };
     }
 
     fn add(&mut self) {
+        if self.tab == Tab::Insights {
+            if let Some(pattern) = self.selected_pattern() {
+                match self.add_word(&pattern.fixed) {
+                    Ok(true) => {
+                        self.notify(format!("Added “{}” to the dictionary.", pattern.fixed))
+                    }
+                    Ok(false) => {
+                        self.notify(format!("“{}” is already in the dictionary.", pattern.fixed))
+                    }
+                    Err(e) => self.fail(e.to_string()),
+                }
+            }
+            return;
+        }
         self.modal = match self.tab {
             Tab::Dictionary => Some(Modal::Word {
                 original: None,
@@ -342,7 +424,7 @@ impl App {
                 ),
                 None => return,
             },
-            Tab::Stats => return,
+            Tab::Insights | Tab::Stats => return,
         };
         self.modal = Some(Modal::Confirm { question, action });
     }
@@ -353,7 +435,9 @@ impl App {
         };
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let save = ctrl && key.code == KeyCode::Char('s');
-        if key.code == KeyCode::Esc {
+        // Esc in the quick-fix box only closes the box.
+        let quick_open = matches!(modal, Modal::Correct { quick: Some(_), .. });
+        if key.code == KeyCode::Esc && !quick_open {
             return;
         }
         match modal {
@@ -362,8 +446,50 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Char('N') => {}
                 _ => self.modal = Some(Modal::Confirm { question, action }),
             },
-            Modal::Correct { item, mut editor } => {
-                if save {
+            Modal::Correct {
+                item,
+                mut editor,
+                quick: Some(mut q),
+            } => {
+                let mut quick = None;
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        q.on_fixed = !q.on_fixed;
+                        quick = Some(q);
+                    }
+                    KeyCode::Enter => quick = self.apply_quick_fix(&mut editor, q),
+                    _ if save => quick = self.apply_quick_fix(&mut editor, q),
+                    _ => {
+                        if q.on_fixed {
+                            q.fixed.input(key);
+                        } else {
+                            q.heard.input(key);
+                        }
+                        quick = Some(q);
+                    }
+                }
+                self.modal = Some(Modal::Correct {
+                    item,
+                    editor,
+                    quick,
+                });
+            }
+            Modal::Correct {
+                item, mut editor, ..
+            } => {
+                if ctrl && key.code == KeyCode::Char('d') {
+                    let quick = Some(Box::new(QuickFix {
+                        heard: TextArea::new(&editor.word_at_cursor(), false),
+                        fixed: TextArea::new("", false),
+                        on_fixed: true,
+                    }));
+                    self.modal = Some(Modal::Correct {
+                        item,
+                        editor,
+                        quick,
+                    });
+                } else if save {
                     let text = editor.text();
                     let result = self.store.correct(&item, Some(&text));
                     self.finish(result, "Correction saved.", Tab::History);
@@ -372,7 +498,11 @@ impl App {
                     self.finish(result, "Correction removed.", Tab::History);
                 } else {
                     editor.input(key);
-                    self.modal = Some(Modal::Correct { item, editor });
+                    self.modal = Some(Modal::Correct {
+                        item,
+                        editor,
+                        quick: None,
+                    });
                 }
             }
             Modal::Word {
@@ -459,6 +589,43 @@ impl App {
                 });
             }
         }
+    }
+
+    /// Replaces the phrase in the editor and adds the fix to the dictionary.
+    /// Returns the box when it should stay open.
+    fn apply_quick_fix(
+        &mut self,
+        editor: &mut TextArea,
+        q: Box<QuickFix>,
+    ) -> Option<Box<QuickFix>> {
+        let heard = q.heard.text().trim().to_string();
+        let fixed = q
+            .fixed
+            .text()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if heard.is_empty() || fixed.is_empty() {
+            self.fail("Fill in what was heard and what it should be.");
+            return Some(q);
+        }
+        let (text, count) = insights::replace_phrase(&editor.text(), &heard, &fixed);
+        editor.set_text(&text);
+        let replaced = match count {
+            0 => format!("“{heard}” not found"),
+            1 => "Replaced 1".to_string(),
+            n => format!("Replaced {n}"),
+        };
+        match self.add_word(&fixed) {
+            Ok(true) => self.notify(format!(
+                "{replaced} · added “{fixed}” to the dictionary · ^S saves"
+            )),
+            Ok(false) => self.notify(format!(
+                "{replaced} · “{fixed}” already in the dictionary · ^S saves"
+            )),
+            Err(e) => self.fail(format!("{replaced}, but the dictionary: {e}")),
+        }
+        None
     }
 
     fn run(&mut self, action: Pending) {

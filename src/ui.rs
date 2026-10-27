@@ -49,6 +49,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match app.tab {
         Tab::History => draw_history(frame, app, body),
+        Tab::Insights => draw_insights(frame, app, body),
         Tab::Dictionary => draw_dictionary(frame, app, body),
         Tab::Snippets => draw_snippets(frame, app, body),
         Tab::Stats => draw_stats(frame, app, body),
@@ -155,6 +156,112 @@ fn preview_text(t: &crate::store::Transcription) -> Vec<Line<'static>> {
         lines.extend(t.heard().lines().map(|l| Line::styled(l.to_string(), dim)));
     }
     lines
+}
+
+fn draw_insights(frame: &mut Frame, app: &mut App, area: Rect) {
+    let [summary, list, example] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Min(5),
+        Constraint::Length(6),
+    ])
+    .areas(area);
+    let ins = &app.insights;
+    let (verdict, fine_tune) = ins.verdict();
+    let dim = Style::new().dark_gray();
+    let summary_lines = vec![
+        Line::from(vec![
+            Span::styled("  Changed transcripts ", dim),
+            Span::raw(ins.compared.to_string()),
+            Span::styled("   corrected by you ", dim),
+            Span::raw(ins.corrected_by_you.to_string()),
+            Span::styled("   word errors ", dim),
+            Span::raw(ins.word_errors.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Repeated mistakes cover ", dim),
+            Span::raw(format!("{:.0}%", ins.coverage() * 100.0)),
+            Span::styled(" of word errors", dim),
+        ]),
+        Line::styled(
+            format!("  {verdict}"),
+            Style::new()
+                .fg(if fine_tune {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                })
+                .bold(),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(summary_lines).block(Block::bordered().title(" Insights ")),
+        summary,
+    );
+
+    let rows: Vec<Row> = ins
+        .patterns
+        .iter()
+        .map(|p| {
+            let dict = if p.in_dictionary {
+                Span::styled("✓ in dictionary", Style::new().fg(Color::Green))
+            } else {
+                Span::styled("a to add", dim)
+            };
+            Row::new(vec![
+                Cell::from(p.count.to_string()),
+                Cell::from(if p.by_you > 0 { "you" } else { "AI" }),
+                Cell::from(Span::styled(p.heard.clone(), Style::new().fg(Color::Red))),
+                Cell::from(Span::styled(
+                    p.fixed.clone(),
+                    Style::new().fg(Color::Green).bold(),
+                )),
+                Cell::from(dict),
+            ])
+        })
+        .collect();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+            Constraint::Min(16),
+        ],
+    )
+    .header(
+        Row::new(["Seen", "By", "Heard", "Should be", "Dictionary"])
+            .style(Style::new().fg(ACCENT).bold()),
+    )
+    .row_highlight_style(selected())
+    .block(Block::bordered().title(format!(" {} mistakes ", ins.patterns.len())));
+    frame.render_stateful_widget(table, list, &mut app.patterns);
+
+    let pattern = app
+        .patterns
+        .selected()
+        .and_then(|i| app.insights.patterns.get(i));
+    let lines = pattern
+        .and_then(|p| app.items.iter().find(|t| t.id == p.example))
+        .map(|t| {
+            vec![
+                Line::from(vec![
+                    Span::styled("heard  ", dim),
+                    Span::raw(one_line(t.heard(), 300)),
+                ]),
+                Line::from(vec![
+                    Span::styled("final  ", dim),
+                    Span::raw(one_line(t.final_text(), 300)),
+                ]),
+            ]
+        })
+        .unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" Newest example · Enter opens it ")),
+        example,
+    );
 }
 
 fn error_box(frame: &mut Frame, area: Rect, title: &str, message: &str) {
@@ -299,12 +406,22 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let hints: &[(&str, &str)] = match (&app.modal, app.tab) {
+        (Some(Modal::Correct { quick: Some(_), .. }), _) => &[
+            ("Tab", "switch field"),
+            ("Enter", "replace + add to dictionary"),
+            ("Esc", "back"),
+        ],
         (Some(Modal::Correct { item, .. }), _) if item.correction.is_some() => &[
             ("^S", "save"),
+            ("^D", "fix word → dictionary"),
             ("^R", "revert to app's text"),
             ("Esc", "cancel"),
         ],
-        (Some(Modal::Correct { .. }), _) => &[("^S", "save"), ("Esc", "cancel")],
+        (Some(Modal::Correct { .. }), _) => &[
+            ("^S", "save"),
+            ("^D", "fix word → dictionary"),
+            ("Esc", "cancel"),
+        ],
         (Some(Modal::Word { .. }), _) => &[("Enter/^S", "save"), ("Esc", "cancel")],
         (Some(Modal::Snippet { .. }), _) => {
             &[("Tab", "switch field"), ("^S", "save"), ("Esc", "cancel")]
@@ -319,6 +436,13 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("x", "export"),
             ("Tab", "next tab"),
             ("r", "reload"),
+            ("q", "quit"),
+        ],
+        (None, Tab::Insights) => &[
+            ("↑↓", "move"),
+            ("a", "add fix to dictionary"),
+            ("Enter", "open example"),
+            ("Tab", "next tab"),
             ("q", "quit"),
         ],
         (None, Tab::Dictionary) | (None, Tab::Snippets) => &[
@@ -370,7 +494,11 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
         return;
     };
     match modal {
-        Modal::Correct { item, editor } => {
+        Modal::Correct {
+            item,
+            editor,
+            quick,
+        } => {
             let area = centered(screen, screen.width * 9 / 10, screen.height * 8 / 10);
             frame.render_widget(Clear, area);
             let outer = Block::bordered()
@@ -398,6 +526,29 @@ fn draw_modal(frame: &mut Frame, app: &mut App) {
                     .block(focus_block("Heard (speech engine, before cleanup)", false)),
                 heard,
             );
+            if let Some(q) = quick {
+                let area = centered(screen, 64, 8);
+                frame.render_widget(Clear, area);
+                let outer = Block::bordered()
+                    .border_style(Style::new().fg(Color::Yellow))
+                    .title(" Fix word everywhere + add to dictionary ");
+                let inner = outer.inner(area);
+                frame.render_widget(outer, area);
+                let [heard_area, fixed_area] =
+                    Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(inner);
+                q.heard.render(
+                    frame,
+                    heard_area,
+                    focus_block("Heard as", !q.on_fixed),
+                    !q.on_fixed,
+                );
+                q.fixed.render(
+                    frame,
+                    fixed_area,
+                    focus_block("Should be", q.on_fixed),
+                    q.on_fixed,
+                );
+            }
         }
         Modal::Word { original, input } => {
             let area = centered(screen, 70, 3);

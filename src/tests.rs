@@ -185,7 +185,7 @@ fn end_to_end_against_fake_bridge() {
     );
 
     // Dictionary: add two, delete the selected first word.
-    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char('3'));
     assert_eq!(app.tab, Tab::Dictionary);
     press(&mut app, KeyCode::Char('a'));
     type_text(&mut app, "kubectl, Textual");
@@ -270,12 +270,75 @@ fn draws_every_tab_and_modal() {
     };
     let history = screen(&mut app);
     assert!(history.contains("2 transcripts") && history.contains("Run kube control"));
-    for code in [KeyCode::Tab, KeyCode::Tab, KeyCode::Tab] {
+    for code in [KeyCode::Tab, KeyCode::Tab, KeyCode::Tab, KeyCode::Tab] {
         press(&mut app, code);
         screen(&mut app);
     }
     assert!(screen(&mut app).contains("Training pairs"));
+    press(&mut app, KeyCode::Char('2'));
+    assert!(screen(&mut app).contains("Repeated mistakes cover"));
     press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Char('e'));
     assert!(screen(&mut app).contains("What you meant"));
+}
+
+#[test]
+fn quick_fix_and_insights_feed_the_dictionary() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = fake_bridge(dir.path());
+    let store = Store::new(
+        dir.path().join("bridge.json"),
+        dir.path().join("none.db"),
+        dir.path().join("c.json"),
+    );
+    let mut app = App::new(store, dir.path().to_path_buf());
+
+    // Correct the newest entry with the quick-fix: "kube control" -> "kubectl".
+    press(&mut app, KeyCode::Char('e'));
+    ctrl(&mut app, 'd');
+    match app.modal.as_mut() {
+        Some(Modal::Correct { quick: Some(q), .. }) => {
+            assert_eq!(q.heard.text(), "", "cursor sits after the full stop");
+            q.heard = TextArea::new("kube control", false);
+        }
+        _ => panic!("quick-fix box didn't open"),
+    }
+    type_text(&mut app, "kubectl");
+    press(&mut app, KeyCode::Enter);
+    match app.modal.as_ref() {
+        Some(Modal::Correct {
+            quick: None,
+            editor,
+            ..
+        }) => {
+            assert_eq!(editor.text(), "Run kubectl get pods.")
+        }
+        _ => panic!("quick-fix should close back to the editor"),
+    }
+    assert_eq!(
+        state.lock().unwrap()["words"],
+        json!(["OpenWhispr", "kubectl"])
+    );
+    ctrl(&mut app, 's');
+    assert!(app.modal.is_none());
+
+    // Insights picks the correction up, already in the dictionary.
+    press(&mut app, KeyCode::Char('2'));
+    let top = &app.insights.patterns[0];
+    assert_eq!(
+        (top.heard.as_str(), top.fixed.as_str(), top.by_you),
+        ("kube control", "kubectl", 1)
+    );
+    assert!(top.in_dictionary);
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(
+        state.lock().unwrap()["words"].as_array().unwrap().len(),
+        2,
+        "no duplicate add"
+    );
+
+    // Enter jumps to the example on History.
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.tab, Tab::History);
+    assert_eq!(app.selected_item().unwrap().id, 2);
 }
