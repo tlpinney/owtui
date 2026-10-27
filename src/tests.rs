@@ -464,3 +464,52 @@ fn mouse_selects_rows_and_places_the_cursor() {
         _ => panic!("editor closed"),
     }
 }
+
+#[test]
+fn double_click_in_the_preview_selects_a_word_to_replace() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, Terminal};
+    let dir = tempfile::tempdir().unwrap();
+    let _state = fake_bridge(dir.path());
+    let store = Store::new(
+        dir.path().join("bridge.json"),
+        dir.path().join("none.db"),
+        dir.path().join("c.json"),
+    );
+    let mut app = App::new(store, dir.path().to_path_buf());
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    // "kube" in the preview: the right-hand pane, after the list.
+    let (x, y) = (60..buffer.area.width - 4)
+        .flat_map(|x| (0..buffer.area.height).map(move |y| (x, y)))
+        .find(|&(x, y)| {
+            (0..4)
+                .map(|i| buffer[(x + i, y)].symbol())
+                .collect::<String>()
+                == "kube"
+        })
+        .expect("preview shows the text");
+    let click = |app: &mut App| {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x + 1,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+
+    click(&mut app); // opens the editor with the cursor in "kube"
+    match app.modal.as_ref() {
+        Some(Modal::Correct { editor, .. }) => assert_eq!(editor.word_at_cursor(), "kube"),
+        _ => panic!("a click on the preview should open the editor"),
+    }
+    click(&mut app); // the second click of a double-click selects the word
+    type_text(&mut app, "kubectl");
+    match app.modal.as_ref() {
+        Some(Modal::Correct { editor, .. }) => {
+            assert_eq!(editor.text(), "Run kubectl control get pods.")
+        }
+        _ => panic!("editor closed"),
+    }
+}

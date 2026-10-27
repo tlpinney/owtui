@@ -38,9 +38,11 @@ just lint                      # fmt --check + clippy -D warnings
 
 `↑↓`/`jk` move, `Tab`/`1`–`5` switch tabs, `x` exports pairs, `r` reloads, `q` quits.
 In editors: `Ctrl+S` saves, `Esc` cancels, `Ctrl+R` reverts a correction, `Ctrl+P` plays the recording.
-Click to put the cursor anywhere; `⌥←`/`⌥→` (or `Ctrl+←`/`→`) jump by word, `Ctrl+W`
-or `⌥⌫` deletes the previous word. In lists, click a row to select it and scroll
-with the wheel. Mouse capture means plain drag doesn't select terminal text;
+Click a word in the History preview to open the editor with the cursor there;
+double-click to select the word, then type to replace it (`Ctrl+D` fixes it
+everywhere and adds it to the dictionary). In the editor, click to put the cursor anywhere; `⌥←`/`⌥→` (or `Ctrl+←`/`→`) jump by word, `Ctrl+W`
+or `⌥⌫` deletes the previous word. In lists, click a row to select it, click it again
+(or double-click) to open it, and scroll with the wheel. Mouse capture means plain drag doesn't select terminal text;
 most terminals still select with Shift or Option held.
 `Ctrl+D` in the correction editor opens a quick-fix: say what was heard and what it
 should be, and it replaces every occurrence in that transcript and adds the word

@@ -112,6 +112,9 @@ pub struct App {
     pub player: Player,
     /// Screen cells holding the current tab's list rows, set when drawn.
     pub rows_area: Rect,
+    /// The History preview's text, keyed by (id, text), drawn with an editor so clicks map to positions.
+    pub preview: Option<((i64, String), TextArea)>,
+    last_click: Option<(Instant, u16, u16)>,
     pub quit: bool,
 }
 
@@ -144,6 +147,8 @@ impl App {
             status: None,
             player: Player::default(),
             rows_area: Rect::default(),
+            preview: None,
+            last_click: None,
             quit: false,
         };
         app.reload();
@@ -335,6 +340,48 @@ impl App {
 
     pub fn handle_mouse(&mut self, ev: MouseEvent) {
         let (x, y) = (ev.column, ev.row);
+        let mut double = false;
+        if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+            double = self.last_click.is_some_and(|(at, lx, ly)| {
+                at.elapsed() < Duration::from_millis(450) && lx == x && ly == y
+            });
+            // A third click starts over rather than counting as another double.
+            self.last_click = (!double).then(|| (Instant::now(), x, y));
+        }
+        if double && self.modal.is_some() {
+            // The first click already placed the cursor (or opened the editor
+            // from the preview, whose layout differs), so select from there.
+            match self.modal.as_mut() {
+                Some(Modal::Correct { quick: Some(q), .. }) => {
+                    let field = if q.on_fixed {
+                        &mut q.fixed
+                    } else {
+                        &mut q.heard
+                    };
+                    field.select_word();
+                }
+                Some(Modal::Correct { editor, .. }) => {
+                    editor.select_word();
+                }
+                Some(Modal::Word { input, .. }) => {
+                    input.select_word();
+                }
+                Some(Modal::Snippet {
+                    trigger,
+                    text,
+                    on_text,
+                    ..
+                }) => {
+                    if *on_text {
+                        text.select_word();
+                    } else {
+                        trigger.select_word();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         match (ev.kind, self.modal.as_mut()) {
             (MouseEventKind::Down(MouseButton::Left), Some(modal)) => match modal {
                 Modal::Correct { quick: Some(q), .. } => {
@@ -365,6 +412,9 @@ impl App {
                 Modal::Confirm { .. } => {}
             },
             (MouseEventKind::Down(MouseButton::Left), None) => {
+                if self.tab == Tab::History && self.click_preview(x, y) {
+                    return;
+                }
                 if !self.rows_area.contains(Position::new(x, y)) {
                     return;
                 }
@@ -376,12 +426,38 @@ impl App {
                     Tab::Stats => return,
                 };
                 let target = offset + (y - self.rows_area.y) as usize;
+                if current == Some(target) {
+                    // A click on the selected row works like Enter.
+                    return self.edit();
+                }
                 self.step(target as isize - current.unwrap_or(0) as isize);
             }
             (MouseEventKind::ScrollDown, None) => self.step(1),
             (MouseEventKind::ScrollUp, None) => self.step(-1),
             _ => {}
         }
+    }
+
+    /// Opens the correction editor with the cursor where the preview was clicked.
+    fn click_preview(&mut self, x: u16, y: u16) -> bool {
+        let Some(((id, _), text)) = self.preview.as_mut() else {
+            return false;
+        };
+        if !text.click(x, y) {
+            return false;
+        }
+        let ((row, col), id) = (text.cursor(), *id);
+        let Some(item) = self.items.iter().find(|t| t.id == id).cloned() else {
+            return false;
+        };
+        let mut editor = TextArea::new(item.final_text(), true);
+        editor.set_cursor(row, col);
+        self.modal = Some(Modal::Correct {
+            item,
+            editor,
+            quick: None,
+        });
+        true
     }
 
     fn step(&mut self, delta: isize) {

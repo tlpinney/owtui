@@ -2,7 +2,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthChar;
@@ -18,6 +19,8 @@ pub struct TextArea {
     /// (row, first char, end char), so clicks map back to a position.
     inner: Rect,
     segments: Vec<(usize, usize, usize)>,
+    /// A selected word as (row, start, end); typing replaces it.
+    selection: Option<(usize, usize, usize)>,
 }
 
 fn is_word(c: char) -> bool {
@@ -45,6 +48,7 @@ impl TextArea {
             scroll: 0,
             inner: Rect::default(),
             segments: Vec::new(),
+            selection: None,
         }
     }
 
@@ -62,8 +66,17 @@ impl TextArea {
         self.col = col.min(self.len(self.row));
     }
 
-    /// The word under or just before the cursor.
-    pub fn word_at_cursor(&self) -> String {
+    pub fn cursor(&self) -> (usize, usize) {
+        (self.row, self.col)
+    }
+
+    pub fn set_cursor(&mut self, row: usize, col: usize) {
+        self.row = row.min(self.lines.len() - 1);
+        self.col = col.min(self.len(self.row));
+    }
+
+    /// Char range of the word under or just before the cursor.
+    fn word_bounds(&self) -> Option<(usize, usize)> {
         let is_word = |c: char| c.is_alphanumeric() || c == '\'' || c == '-';
         let chars: Vec<char> = self.lines[self.row].chars().collect();
         let mut at = self.col.min(chars.len());
@@ -71,7 +84,7 @@ impl TextArea {
             at -= 1;
         }
         if at >= chars.len() || !is_word(chars[at]) {
-            return String::new();
+            return None;
         }
         let (mut start, mut end) = (at, at);
         while start > 0 && is_word(chars[start - 1]) {
@@ -80,7 +93,33 @@ impl TextArea {
         while end < chars.len() && is_word(chars[end]) {
             end += 1;
         }
-        chars[start..end].iter().collect()
+        Some((start, end))
+    }
+
+    /// The selection, else the word under or just before the cursor.
+    pub fn word_at_cursor(&self) -> String {
+        let (start, end) = match self.selection {
+            Some((_, start, end)) => (start, end),
+            None => match self.word_bounds() {
+                Some(bounds) => bounds,
+                None => return String::new(),
+            },
+        };
+        self.lines[self.row].chars().take(end).skip(start).collect()
+    }
+
+    /// Selects the word at the cursor; false when there's none.
+    pub fn select_word(&mut self) -> bool {
+        let Some((start, end)) = self.word_bounds() else {
+            return false;
+        };
+        self.selection = Some((self.row, start, end));
+        self.col = end;
+        true
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.selection.is_some()
     }
 
     /// Start of the previous word, or the end of the line above.
@@ -142,6 +181,7 @@ impl TextArea {
         if !inner.contains(Position::new(x, y)) {
             return false;
         }
+        self.selection = None;
         let line = self.scroll + (y - inner.y) as usize;
         let Some(&(row, start, end)) = self.segments.get(line).or(self.segments.last()) else {
             return false;
@@ -176,6 +216,17 @@ impl TextArea {
     pub fn input(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if let Some((row, start, end)) = self.selection.take() {
+            let replaces = matches!(key.code, KeyCode::Char(_) if !ctrl && !alt);
+            if replaces || matches!(key.code, KeyCode::Backspace | KeyCode::Delete) {
+                let (a, b) = (self.byte(row, start), self.byte(row, end));
+                self.lines[row].drain(a..b);
+                (self.row, self.col) = (row, start);
+                if !replaces {
+                    return true;
+                }
+            }
+        }
         let (row, col) = (self.row, self.col);
         match key.code {
             KeyCode::Left if ctrl || alt => self.word_left(),
@@ -301,7 +352,21 @@ impl TextArea {
             .iter()
             .skip(self.scroll)
             .take(height)
-            .map(|&(r, s, e)| Line::raw(self.lines[r].chars().take(e).skip(s).collect::<String>()))
+            .map(|&(r, s, e)| {
+                let chars: Vec<char> = self.lines[r].chars().take(e).skip(s).collect();
+                match self.selection {
+                    Some((row, a, b)) if row == r && a < e && b > s => {
+                        let (a, b) = (a.max(s) - s, b.min(e) - s);
+                        let part = |x: usize, y: usize| chars[x..y].iter().collect::<String>();
+                        Line::from(vec![
+                            Span::raw(part(0, a)),
+                            Span::styled(part(a, b), Style::new().add_modifier(Modifier::REVERSED)),
+                            Span::raw(part(b, chars.len())),
+                        ])
+                    }
+                    _ => Line::raw(chars.into_iter().collect::<String>()),
+                }
+            })
             .collect();
         self.inner = inner;
         self.segments = segments;
@@ -346,6 +411,25 @@ mod tests {
         assert_eq!(t.text(), "a b");
         t.input(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert_eq!(t.text(), "");
+    }
+
+    #[test]
+    fn typing_replaces_a_selected_word() {
+        let mut t = TextArea::new("open the dewy now", false);
+        t.set_cursor(0, 10);
+        assert!(t.select_word());
+        assert_eq!(t.word_at_cursor(), "dewy");
+        for c in "TUI".chars() {
+            t.input(key(KeyCode::Char(c)));
+        }
+        assert_eq!(t.text(), "open the TUI now");
+        t.set_cursor(0, 1);
+        t.select_word();
+        t.input(key(KeyCode::Backspace));
+        assert_eq!(t.text(), " the TUI now");
+        t.select_word(); // nothing under the cursor
+        t.input(key(KeyCode::Right));
+        assert!(!t.has_selection());
     }
 
     #[test]

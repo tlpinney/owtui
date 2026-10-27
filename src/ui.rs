@@ -1,6 +1,7 @@
 //! Drawing.
 
 use crate::app::{one_line, short_time, App, Modal, Tab};
+use crate::editor::TextArea;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -126,10 +127,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
             ])
         })
         .collect();
-    let preview_lines = app
-        .selected_item()
-        .map(|t| preview_text(&t))
-        .unwrap_or_default();
+    let item = app.selected_item();
 
     let table = Table::new(
         rows,
@@ -146,39 +144,68 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, list, &mut app.history);
     app.rows_area = rows_area(list, true);
 
+    let outer = Block::bordered().title(" Preview · click a word to edit there ");
+    let inner = outer.inner(preview);
+    frame.render_widget(outer, preview);
+    let Some(t) = item else {
+        app.preview = None;
+        return;
+    };
+    let (head, extras) = preview_text(&t);
+    let extras_height = wrapped_height(&extras, inner.width).min(inner.height / 2);
+    let [head_area, body, extras_area] = Layout::vertical([
+        Constraint::Length(head.len() as u16),
+        Constraint::Min(1),
+        Constraint::Length(extras_height),
+    ])
+    .areas(inner);
+    frame.render_widget(Paragraph::new(head), head_area);
+    // Drawn with the editor's own wrapping, so a click maps to a text position.
+    let key = (t.id, t.final_text().to_string());
+    if app.preview.as_ref().map(|(k, _)| k) != Some(&key) {
+        let mut text = TextArea::new(t.final_text(), true);
+        text.set_cursor(0, 0);
+        app.preview = Some((key, text));
+    }
+    if let Some((_, text)) = app.preview.as_mut() {
+        text.render(frame, body, Block::new(), false);
+    }
     frame.render_widget(
-        Paragraph::new(preview_lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Preview ")),
-        preview,
+        Paragraph::new(extras).wrap(Wrap { trim: false }),
+        extras_area,
     );
 }
 
-fn preview_text(t: &crate::store::Transcription) -> Vec<Line<'static>> {
+fn wrapped_height(lines: &[Line], width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    lines
+        .iter()
+        .map(|l| l.width().div_ceil(width).max(1) as u16)
+        .sum()
+}
+
+/// The preview's header (above the clickable text) and extras (below it).
+fn preview_text(t: &crate::store::Transcription) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     let dim = Style::new().dark_gray();
     let mut meta = vec![short_time(t.when()), t.engine().to_string()];
     if let Some(ms) = t.audio_duration_ms {
         meta.push(format!("{:.1}s", ms as f64 / 1000.0));
     }
-    let mut lines = vec![Line::styled(meta.join(" · "), dim), Line::raw("")];
-    if let Some(fix) = &t.correction {
-        lines.push(Line::styled(
+    let mut head = vec![Line::styled(meta.join(" · "), dim), Line::raw("")];
+    let mut extras = Vec::new();
+    if t.correction.is_some() {
+        head.push(Line::styled(
             "Your correction",
             Style::new().fg(Color::Yellow).bold(),
         ));
-        lines.extend(fix.lines().map(|l| Line::raw(l.to_string())));
-        lines.push(Line::raw(""));
-        lines.push(Line::styled("── app saved ──", dim));
-        lines.extend(t.text.lines().map(|l| Line::styled(l.to_string(), dim)));
-    } else {
-        lines.extend(t.text.lines().map(|l| Line::raw(l.to_string())));
+        extras.push(Line::styled("── app saved ──", dim));
+        extras.extend(t.text.lines().map(|l| Line::styled(l.to_string(), dim)));
     }
     if t.cleaned_by_ai() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled("── heard (before cleanup) ──", dim));
-        lines.extend(t.heard().lines().map(|l| Line::styled(l.to_string(), dim)));
+        extras.push(Line::styled("── heard (before cleanup) ──", dim));
+        extras.extend(t.heard().lines().map(|l| Line::styled(l.to_string(), dim)));
     }
-    lines
+    (head, extras)
 }
 
 fn draw_insights(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -436,6 +463,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("Tab", "switch field"),
             ("Enter", "replace + add to dictionary"),
             ("Esc", "back"),
+        ],
+        (Some(Modal::Correct { editor, .. }), _) if editor.has_selection() => &[
+            ("type", "replace word"),
+            ("^D", "fix everywhere → dictionary"),
+            ("^S", "save"),
+            ("Esc", "cancel"),
         ],
         (Some(Modal::Correct { item, .. }), _) if item.correction.is_some() => &[
             ("^S", "save"),
