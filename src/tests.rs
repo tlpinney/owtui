@@ -622,3 +622,29 @@ fn dialog_buttons_can_be_clicked() {
         1
     );
 }
+
+#[test]
+fn tabs_can_be_clicked() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, Terminal};
+    let dir = tempfile::tempdir().unwrap();
+    let _state = fake_bridge(dir.path());
+    let store = Store::new(
+        dir.path().join("bridge.json"),
+        dir.path().join("none.db"),
+        dir.path().join("c.json"),
+    );
+    let mut app = App::new(store, dir.path().to_path_buf());
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    for target in [Tab::Dictionary, Tab::Stats, Tab::Insights, Tab::History] {
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let &(rect, _) = app.tab_areas.iter().find(|(_, t)| *t == target).unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + rect.width / 2,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.tab, target);
+    }
+}

@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 use std::collections::BTreeMap;
 
@@ -35,14 +35,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Style::new().fg(Color::Yellow),
         )
     };
-    let tabs = Tabs::new(
-        Tab::ALL
-            .iter()
-            .enumerate()
-            .map(|(i, t)| format!("{} {}", i + 1, t.title())),
-    )
-    .select(app.tab.index())
-    .highlight_style(Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
     // Tabs and the app label share the first row; a block title there would
     // take a row of its own and push the tabs behind the border.
     let label = Line::from(vec![" OpenWhispr ".bold(), mode]).right_aligned();
@@ -50,7 +42,34 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let [tabs_area, label_area] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(label.width() as u16)])
             .areas(row);
-    frame.render_widget(tabs, tabs_area);
+    // Drawn by hand so each tab's cells are known and clicks can switch to it.
+    app.tab_areas.clear();
+    let mut x = tabs_area.x;
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let text = format!(" {} {} ", i + 1, tab.title());
+        let width = Line::raw(text.as_str()).width() as u16;
+        if x + width > tabs_area.right() {
+            break;
+        }
+        let style = if *tab == app.tab {
+            Style::new()
+                .fg(ACCENT)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::new()
+        };
+        let rect = Rect::new(x, tabs_area.y, width, 1);
+        frame.render_widget(Span::styled(text, style), rect);
+        app.tab_areas.push((rect, *tab));
+        x += width;
+        if i + 1 < Tab::ALL.len() && x < tabs_area.right() {
+            frame.render_widget(
+                Span::styled("│", Style::new().dark_gray()),
+                Rect::new(x, tabs_area.y, 1, 1),
+            );
+            x += 1;
+        }
+    }
     frame.render_widget(label, label_area);
     frame.render_widget(Block::new().borders(Borders::TOP), rule);
 

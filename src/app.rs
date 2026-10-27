@@ -112,6 +112,8 @@ pub struct App {
     pub player: Player,
     /// Screen cells holding the current tab's list rows, set when drawn.
     pub rows_area: Rect,
+    /// Where each tab title is drawn, for clicks.
+    pub tab_areas: Vec<(Rect, Tab)>,
     /// Dialog buttons as drawn, with the key each one stands for.
     pub buttons: Vec<(Rect, KeyEvent)>,
     /// The History preview's text, keyed by (id, text), drawn with an editor so clicks map to positions.
@@ -149,6 +151,7 @@ impl App {
             status: None,
             player: Player::default(),
             rows_area: Rect::default(),
+            tab_areas: Vec::new(),
             buttons: Vec::new(),
             preview: None,
             last_click: None,
@@ -450,6 +453,15 @@ impl App {
                 Modal::Confirm { .. } => {}
             },
             (MouseEventKind::Down(MouseButton::Left), None) => {
+                let tab = self
+                    .tab_areas
+                    .iter()
+                    .find(|(r, _)| r.contains(Position::new(x, y)));
+                if let Some(&(_, tab)) = tab {
+                    self.tab = tab;
+                    self.searching = false;
+                    return;
+                }
                 if self.tab == Tab::History && self.click_preview(x, y) {
                     return;
                 }
