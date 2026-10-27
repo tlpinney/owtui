@@ -16,8 +16,6 @@ just test                      # cargo nextest (fake bridge, never real data)
 just lint                      # fmt --check + clippy -D warnings
 ```
 
-The first version was Python/Textual; it's kept at the `python-prototype` tag.
-
 ## How it talks to OpenWhispr
 
 - **Live:** through the app's CLI bridge, a local HTTP API on 127.0.0.1
