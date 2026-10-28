@@ -147,7 +147,9 @@ if that or any upload happens, and yellow if a cloud engine is selected.
    against `signing/allowed_signers`, uploads `SHA256SUMS.sig`, and publishes.
 
 CI never has the signing key, so a compromised workflow can't produce a
-release the installer accepts.
+release the installer accepts. The repository has immutable releases turned
+on: once published (from v0.1.1 on), a release's files and tag can't be
+changed.
 
 ## Verifying a release by hand
 
